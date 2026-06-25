@@ -118,8 +118,12 @@ async def handle_channel_post(message: Message):
     text = resp.text.strip()
     if not text:
         return
+    # Reply (comment) under the channel post — use safe_send for RetryAfter handling.
+    # In channels, message.reply threads the comment under the post.
     try:
-        await message.reply(text)
-        await db.touch_channel_comment(chat.id)
+        from bot.safe_send import safe_send
+        sent = await safe_send(message.bot, chat.id, text, reply_to_message_id=message.message_id)
+        if sent:
+            await db.touch_channel_comment(chat.id)
     except Exception as e:
         logger.debug(f"channel comment reply failed: {e}")

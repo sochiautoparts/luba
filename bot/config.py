@@ -66,9 +66,15 @@ class BotConfig:
     PARTNER_REFRESH_HOURS: int = int(os.getenv("PARTNER_REFRESH_HOURS", "6"))
 
     # ── Group activity tuning ──
-    GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.35"))
-    GROUP_MIN_INTERVAL: int = int(os.getenv("GROUP_MIN_INTERVAL", "12"))
+    # Proactive probability: kept moderate to avoid Telegram flood control
+    # (Telegram limits ~20 msg/min to a single group). Lyuba still ALWAYS
+    # responds to direct mentions/replies — this only controls unsolicited
+    # proactive comments on random messages.
+    GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.18"))
+    GROUP_MIN_INTERVAL: int = int(os.getenv("GROUP_MIN_INTERVAL", "20"))
     GROUP_MEMORY_SIZE: int = int(os.getenv("GROUP_MEMORY_SIZE", "30"))
+    # Max messages Lyuba sends per minute in a single group (flood safety)
+    GROUP_MAX_PER_MINUTE: int = int(os.getenv("GROUP_MAX_PER_MINUTE", "3"))
 
     # ── Web verification ──
     SEARCH_TIMEOUT_SECONDS: int = int(os.getenv("SEARCH_TIMEOUT_SECONDS", "6"))

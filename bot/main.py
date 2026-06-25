@@ -65,6 +65,24 @@ class LyubaBot:
         self.dp.include_router(channel_router)
         self._stop = asyncio.Event()
 
+        # Register error handler — log exceptions but NEVER crash the bot.
+        # This catches RetryAfter, network errors, handler bugs, etc. and
+        # keeps polling alive.
+        from aiogram.types import ErrorEvent
+        @self.dp.error()
+        async def on_error(event: ErrorEvent):
+            try:
+                exc = event.exception
+                # TelegramRetryAfter is expected during flood — log quietly
+                from aiogram.exceptions import TelegramRetryAfter
+                if isinstance(exc, TelegramRetryAfter):
+                    logger.warning(f"Flood control (RetryAfter {exc.retry_after}s) — handled, bot continues")
+                else:
+                    logger.error(f"Handler error (suppressed): {type(exc).__name__}: {exc}", exc_info=False)
+            except Exception:
+                pass
+            # Return None so aiogram doesn't propagate/crash
+
     async def start(self) -> None:
         logger.info("=== Люба Bot стартует ===")
         logger.info(f"Bot: {config.BOT_USERNAME} (id={config.BOT_ID}), owner={config.OWNER_ID}")

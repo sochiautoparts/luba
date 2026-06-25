@@ -235,4 +235,12 @@ async def _process_private(message: Message, text: str):
         first_url = _re.search(r"https?://\S+", verify_ctx)
         if first_url:
             out += f"\n\nвот, нашла кое-что: {first_url.group(0)}"
-    await message.answer(out)
+    # Use safe_send (handles RetryAfter for private chats too)
+    try:
+        from bot.safe_send import safe_send
+        await safe_send(message.bot, message.chat.id, out)
+    except Exception:
+        try:
+            await message.answer(out)
+        except Exception:
+            pass

@@ -105,7 +105,11 @@ def recent_messages_to_text(messages: List[Dict[str, Any]], limit: int = 10) -> 
 
 
 def build_group_context(message: Message, recent_text: str, memory_facts: List[str]) -> str:
-    """Build the extra_context string for a group interaction."""
+    """Build the extra_context string for a group interaction.
+
+    Includes WHO Lyuba is replying to (the reply target), so she can address
+    them by name and continue a threaded conversation naturally.
+    """
     who = user_descriptor(message.from_user)
     where = chat_descriptor(message.chat)
     directed = is_directed_at_lyuba(message)
@@ -114,12 +118,38 @@ def build_group_context(message: Message, recent_text: str, memory_facts: List[s
         f"ГДЕ: {where}.",
         f"КТО ПИШЕТ: {who}.",
     ]
+
+    # Detect if this message is a REPLY to another user — Lyuba should
+    # understand the conversation thread and address the right person.
+    reply_target = None
+    if message.reply_to_message:
+        rep = message.reply_to_message
+        rep_author = rep.from_user
+        if rep_author:
+            if rep_author.id == config.BOT_ID:
+                reply_target = "ответ на твоё (Любы) предыдущее сообщение"
+            else:
+                rn = (rep_author.first_name or "").strip()
+                if rep_author.last_name:
+                    rn += " " + rep_author.last_name.strip()
+                if rep_author.username:
+                    rn += f" (@{rep_author.username})"
+                reply_target = f"ответ на сообщение пользователя {rn}"
+        else:
+            reply_target = "ответ на сообщение от анонима/канала"
+        # Include the replied-to text so Lyuba understands the thread
+        rep_text = (rep.text or rep.caption or "").strip()
+        if rep_text:
+            parts.append(f"НА ЧТО ОТВЕЧАЮТ (цитата): {rep_text[:400]}")
+    if reply_target:
+        parts.append(f"ПРОТЕЖКА: это {reply_target}. Пойми контекст треда и ответь уместно.")
+
     if directed:
-        parts.append("ОБРАЩЕНИЕ: это сообщение адресовано тебе (упомянули / ответили / личка).")
+        parts.append("ОБРАЩЕНИЕ: это сообщение адресовано тебе (упомянули / ответили / личка). Отвечай адресно, можно по имени.")
     else:
-        parts.append("ОБРАЩЕНИЕ: это сообщение НЕ тебе лично — ты комментируешь по желанию, коротко и к месту.")
+        parts.append("ОБРАЩЕНИЕ: это сообщение НЕ тебе лично — ты вступаешь в беседу по желанию, коротко и к месту. Можешь задать вопрос или дополнить тему.")
     if recent_text:
-        parts.append(f"НЕДАВНИЕ СООБЩЕНИЯ В ЭТОМ ЧАТЕ (для контекста):\n{recent_text}")
+        parts.append(f"НЕДАВНИЕ СООБЩЕНИЯ В ЭТОМ ЧАТЕ (контекст беседы):\n{recent_text}")
     if memory_facts:
         parts.append("ЧТО ТЫ ПОМНИШЬ ОБ ЭТОМ ЧАТЕ/ЛЮДЯХ:\n" + "\n".join(f"- {f}" for f in memory_facts[:6]))
     return "\n\n".join(parts)

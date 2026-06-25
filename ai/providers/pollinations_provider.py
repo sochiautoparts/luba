@@ -27,9 +27,15 @@ from bot.config import config
 
 logger = logging.getLogger("luba.ai.pollinations")
 
-# Verified valid models on Pollinations (June 2025).
-# Only `openai` (= GPT-OSS 20B) exists; `openai-fast` is an alias.
-CHAT_MODELS = ["openai", "openai-fast"]
+# Pollinations models — verified available (June 2025).
+# `openai` and `openai-fast` are the same GPT-OSS 20B model.
+# Other model names (mistral, deepseek, etc.) MAY return 404 OR 429:
+#   - 404 = permanently removed (skip)
+#   - 429 = temporarily overloaded (retry later, do NOT disable)
+# We keep a broader candidate list and try each; 429s trigger a short sleep+retry.
+CHAT_MODELS = ["openai", "openai-fast", "mistral", "deepseek"]
+# Models confirmed to return 404 "Model not found" — skip these permanently
+_DISABLED_MODELS = {"searchgpt", "roblox", "unity", "evil", "nova", "midijourney"}
 VISION_MODEL = "openai"
 
 
@@ -113,7 +119,12 @@ class PollinationsProvider(BaseAIProvider):
 
     async def _try_post(self, messages: List[Dict[str, str]], model: str,
                         temperature: float, max_tokens: int) -> Optional[str]:
-        """POST endpoint — OpenAI-compatible JSON. Short timeout for fast failover."""
+        """POST endpoint — OpenAI-compatible JSON.
+
+        Handles 429 (queue full / rate-limited) with a short retry, since
+        Pollinations models are often temporarily unavailable (not broken).
+        404 "Model not found" = permanently removed → no retry.
+        """
         payload = {
             "model": model,
             "messages": messages,
@@ -126,25 +137,40 @@ class PollinationsProvider(BaseAIProvider):
         if self.use_key:
             urls.append(f"{self._base_url}/openai")
         urls.append(f"{self._free_url}/openai")
+        last_err = ""
         for url in urls:
-            try:
-                async with httpx.AsyncClient(timeout=20.0) as client:
-                    resp = await client.post(url, json=payload, headers=self._headers())
-                if resp.status_code == 200:
-                    data = resp.json()
-                    text = ""
-                    if isinstance(data, dict):
-                        choices = data.get("choices", [])
-                        if choices:
-                            msg = choices[0].get("message", {})
-                            text = msg.get("content", "") or choices[0].get("text", "")
-                    text = (text or "").strip()
-                    if text:
-                        return text
-                else:
-                    logger.debug(f"Pollinations POST {url} {model} -> {resp.status_code}")
-            except Exception as e:
-                logger.debug(f"Pollinations POST {url} {model} exception: {e}")
+            for attempt in range(2):  # one retry on 429
+                try:
+                    async with httpx.AsyncClient(timeout=20.0) as client:
+                        resp = await client.post(url, json=payload, headers=self._headers())
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        text = ""
+                        if isinstance(data, dict):
+                            choices = data.get("choices", [])
+                            if choices:
+                                msg = choices[0].get("message", {})
+                                text = msg.get("content", "") or choices[0].get("text", "")
+                        text = (text or "").strip()
+                        if text:
+                            return text
+                        last_err = "empty response"
+                    elif resp.status_code == 429:
+                        # Temporarily overloaded — wait and retry once
+                        last_err = "429 queue full"
+                        if attempt == 0:
+                            await asyncio.sleep(2)
+                            continue
+                    elif resp.status_code == 404:
+                        # Model permanently removed — stop trying this model
+                        last_err = f"404 model not found: {model}"
+                        break
+                    else:
+                        last_err = f"HTTP {resp.status_code}"
+                        logger.debug(f"Pollinations POST {url} {model} -> {resp.status_code}")
+                except Exception as e:
+                    last_err = str(e)
+                    logger.debug(f"Pollinations POST {url} {model} exception: {e}")
         return None
 
     async def chat(self, messages: List[Dict[str, str]],

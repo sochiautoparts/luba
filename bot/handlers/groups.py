@@ -46,7 +46,9 @@ logger = logging.getLogger("luba.groups")
 group_router = Router()
 
 _VERIFY_HINTS = ["новост", "правда ли", "это правда", "сколько стоит", "цена",
-                 "когда выйдет", "что случилось", "говорят что", "по данным"]
+                 "когда выйдет", "что случилось", "говорят что", "по данным",
+                 "сегодня", "вчера", "слышал", "прочитал", "вот пишут",
+                 "источник", "статья", "появился", "вышла", "анонс", "запустили"]
 
 
 def _needs_verification(text: str) -> bool:
@@ -163,9 +165,11 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     # If a photo has no caption, we note "(фото без подписи)" in the prompt.
 
     # Web verification (concurrent, best-effort)
+    # Lyuba verifies/supplements event info when the message contains factual
+    # claims, news, prices, dates — she adds a source link naturally.
     verify_task = None
     if _needs_verification(text) and random.random() < config.WEB_VERIFY_PROB:
-        verify_task = asyncio.create_task(verify_claim(text[:200]))
+        verify_task = asyncio.create_task(verify_claim(text[:300]))
 
     # Always use the comment() path for groups — it does NOT touch the user's
     # private chat_history (group context comes from extra_context above).
@@ -238,14 +242,12 @@ async def handle_group_photo(message: Message):
         return
     if not out:
         return
+    # ALWAYS reply (thread) — same as text handler
     try:
-        if directed and message.reply_to_message:
-            await message.reply_to_message.reply(out)
-        else:
-            await message.answer(out)
+        from bot.safe_send import safe_reply
+        await safe_reply(message.bot, message, out, always_reply=True)
     except Exception as e:
-        logger.debug(f"send group reply failed: {e}")
-    # Log Lyuba's own message
+        logger.debug(f"safe_reply (photo) failed: {e}")
     await _log_group_message(message, content=out, is_media=False, is_bot=True)
 
 
@@ -291,11 +293,12 @@ async def handle_group_text(message: Message):
         return
     if not out:
         return
+    # ALWAYS reply (thread) to the user's message — so it's clear WHO Lyuba
+    # is answering. This is the correct Telegram pattern for group chats.
+    # safe_reply handles TelegramRetryAfter + per-chat rate limit + fallback.
     try:
-        if directed and message.reply_to_message:
-            await message.reply_to_message.reply(out)
-        else:
-            await message.answer(out)
+        from bot.safe_send import safe_reply
+        await safe_reply(message.bot, message, out, always_reply=True)
     except Exception as e:
-        logger.debug(f"send group reply failed: {e}")
+        logger.debug(f"safe_reply failed: {e}")
     await _log_group_message(message, content=out, is_media=False, is_bot=True)
