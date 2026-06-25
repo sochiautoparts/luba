@@ -66,14 +66,12 @@ class BotConfig:
     PARTNER_REFRESH_HOURS: int = int(os.getenv("PARTNER_REFRESH_HOURS", "6"))
 
     # ── Group activity tuning ──
-    # Lyuba is ACTIVE in groups: responds to direct mentions/replies ALWAYS,
-    # and proactively comments on a good portion of other messages.
+    # Lyuba is VERY ACTIVE in groups: responds to direct mentions/replies ALWAYS,
+    # and proactively comments on MOST other messages (60% chance).
     # Telegram's hard limit is ~20 msg/min per group; safe_send handles
-    # RetryAfter gracefully (waits + retries) so we can be active.
-    # GROUP_MAX_PER_MINUTE is set just under the limit (15) to avoid bans,
-    # and directed messages use a higher cap (priority) so they're never dropped.
-    GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.45"))
-    GROUP_MIN_INTERVAL: int = int(os.getenv("GROUP_MIN_INTERVAL", "8"))
+    # RetryAfter gracefully (waits + retries) so we can be very active.
+    GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.6"))
+    GROUP_MIN_INTERVAL: int = int(os.getenv("GROUP_MIN_INTERVAL", "5"))
     GROUP_MEMORY_SIZE: int = int(os.getenv("GROUP_MEMORY_SIZE", "30"))
     # Max messages Lyuba sends per minute in a single group (flood safety).
     # Telegram's hard limit is ~20 msg/min/group. We use 15 as the proactive
@@ -83,7 +81,7 @@ class BotConfig:
 
     # ── Web verification ──
     SEARCH_TIMEOUT_SECONDS: int = int(os.getenv("SEARCH_TIMEOUT_SECONDS", "6"))
-    WEB_VERIFY_PROB: float = float(os.getenv("WEB_VERIFY_PROB", "0.6"))
+    WEB_VERIFY_PROB: float = float(os.getenv("WEB_VERIFY_PROB", "0.7"))
 
     # ── Channels Lyuba recommends subscribing to ──
     RECOMMEND_CHANNELS: List[str] = field(default_factory=lambda: [
@@ -96,9 +94,9 @@ class BotConfig:
     # ── Reactions (likes) ──
     # Probability Lyuba sets a reaction on a group message she reads (not replies to)
     # Reactions don't count toward message flood limits, so we can be generous.
-    REACTION_PROB: float = float(os.getenv("REACTION_PROB", "0.45"))
+    REACTION_PROB: float = float(os.getenv("REACTION_PROB", "0.5"))
     # Probability Lyuba reacts to a channel post
-    CHANNEL_REACTION_PROB: float = float(os.getenv("CHANNEL_REACTION_PROB", "0.6"))
+    CHANNEL_REACTION_PROB: float = float(os.getenv("CHANNEL_REACTION_PROB", "0.7"))
 
     # ── AI tuning ──
     CHAT_TEMPERATURE: float = 0.85

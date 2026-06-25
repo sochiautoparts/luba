@@ -84,27 +84,29 @@ async def _log_group_message(message: Message, content: str = "", is_media: bool
 
 
 async def _should_respond(message: Message) -> bool:
-    """Decide if Lyuba responds to this group message."""
-    # Skip if from a bot (avoid loops) — unless it's a reply to Lyuba
-    u = message.from_user
-    if u and u.is_bot and u.id != config.BOT_ID:
-        # Only respond if someone replied to Lyuba and the replier is a bot? No — skip bots.
-        return False
+    """Decide if Lyuba responds to this group message.
 
+    Lyuba is VERY ACTIVE: responds to direct mentions/replies ALWAYS,
+    and proactively comments on most other messages (high probability).
+    Only skips: other bots (loop prevention), own messages, politics/war.
+    """
+    u = message.from_user
+    # Skip other bots (avoid loops)
+    if u and u.is_bot and u.id != config.BOT_ID:
+        return False
     # Skip own messages
     if u and u.id == config.BOT_ID:
         return False
-
-    # Skip channel-forwarded posts in groups (handled by channel logic if it's a channel)
-    if message.sender_chat and message.sender_chat.type == "channel":
-        # This is a channel post forwarded into a discussion group — treat as comment target
-        return random.random() < config.GROUP_PROACTIVE_PROB
 
     directed = is_directed_at_lyuba(message)
     if directed:
         return True
 
-    # Proactive: with some probability, but respect min interval
+    # Channel-forwarded posts in discussion groups — high proactive chance
+    if message.sender_chat and message.sender_chat.type == "channel":
+        return random.random() < config.GROUP_PROACTIVE_PROB
+
+    # Proactive: high probability, but respect min interval to avoid flood
     last_bot = await db.last_bot_message_time(message.chat.id)
     if (time.time() - last_bot) < config.GROUP_MIN_INTERVAL:
         return False
