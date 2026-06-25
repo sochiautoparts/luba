@@ -101,6 +101,29 @@ def clean_ai_response(text: str) -> str:
     return text.strip()
 
 
+def _adaptive_length_hint(prompt: str) -> str:
+    """Decide a natural response length band from the prompt.
+
+    Returns a short instruction telling the model how long to be:
+      - "короткая реакция"   (1 sentence, ~50-120 chars) — quick comments, emoji-like
+      - "средний ответ"      (2-3 sentences, ~150-280 chars) — normal chat
+      - "развёрнутый ответ"  (3-5 sentences, ~300-500 chars) — questions, discussions
+    The model still chooses; this is a nudge, not a hard cap.
+    """
+    p = (prompt or "").strip()
+    # Question to Lyuba → she can be a bit more elaborate
+    if "?" in p and len(p) > 40:
+        return "ДЛИНА: развёрнутый ответ (3-5 предложений), задай встречный вопрос если уместно."
+    # Very short prompt (greeting, exclamation) → short reaction
+    if len(p) < 30 or p.endswith("!") or p.endswith("😄") or p.endswith("👍"):
+        return "ДЛИНА: короткая живая реакция (1 предложение)."
+    # Long thoughtful message → medium discussion reply
+    if len(p) > 200:
+        return "ДЛИНА: средний ответ (2-3 предложения), подхвали тему и задай вопрос."
+    # Default
+    return "ДЛИНА: средний ответ (1-3 предложения, по ситуации). Иногда задай встречный вопрос."
+
+
 # ── Static fallbacks (when all providers fail) ────────────────────────────────
 
 _CHAT_FALLBACKS = [
@@ -161,6 +184,8 @@ class AIRouter:
         max_chars: int = None,
     ) -> AIResponse:
         sys_prompt = self._build_system(system_prompt, extra_context, mood)
+        # Adaptive length hint for private chats too
+        sys_prompt += "\n\n" + _adaptive_length_hint(message)
         history = await db.get_chat_history(user_id, limit=8)
 
         messages = [{"role": "system", "content": sys_prompt}]
@@ -187,18 +212,34 @@ class AIRouter:
         extra_context: str = "",
         mood: str = "",
         route_type: str = "comment",
+        max_chars: int = None,
+        max_tokens: int = None,
     ) -> AIResponse:
-        """Generate a short comment (group proactive / channel post comment)."""
+        """Generate a short comment (group proactive / channel post comment).
+
+        Response length is ADAPTIVE: the system prompt asks the model to vary
+        length by context (1 sentence for quick reactions, 2-3 for discussions).
+        We pass a length-band hint derived from the prompt, and only hard-truncate
+        at the end as a safety cap.
+        """
         base = persona.local_system_prompt if route_type == "comment" else persona.system_prompt
         sys_prompt = self._build_system(base, extra_context, mood)
+
+        # Adaptive length hint: short prompts → short replies; questions/long
+        # messages → can be a bit longer. This makes Lyuba feel natural, not
+        # uniformly terse.
+        adaptive_hint = _adaptive_length_hint(prompt)
+
         messages = [
-            {"role": "system", "content": sys_prompt},
+            {"role": "system", "content": sys_prompt + "\n\n" + adaptive_hint},
             {"role": "user", "content": prompt[:2000]},
         ]
-        response = await self._route(messages, route_type, max_tokens=config.COMMENT_MAX_TOKENS)
+        tokens = max_tokens or config.COMMENT_MAX_TOKENS
+        response = await self._route(messages, route_type, max_tokens=tokens)
         response.text = clean_ai_response(response.text or "")
+        cap = max_chars or config.COMMENT_MAX_CHARS
         if response.ok:
-            response.text = response.text[:config.COMMENT_MAX_CHARS]
+            response.text = response.text[:cap]
         return response
 
     async def vision(

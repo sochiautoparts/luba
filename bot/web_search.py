@@ -131,9 +131,20 @@ def format_search_results(results: List[SearchResult], max_items: int = 3) -> st
     return "\n".join(lines)
 
 
-async def verify_claim(claim: str) -> str:
-    """Verify a factual claim via web search. Returns formatted context string."""
-    results = await web_search(claim, max_results=3)
+async def verify_claim(claim: str, fast: bool = True) -> str:
+    """Verify a factual claim via web search. Returns formatted context string.
+
+    Fast mode (default): shorter timeout (5s), fewer results — optimized for
+    quick fact-checks during conversation so the user doesn't wait long.
+    """
+    timeout = 5.0 if fast else config.SEARCH_TIMEOUT_SECONDS
+    try:
+        import asyncio as _a
+        results = await _a.wait_for(web_search(claim, max_results=3), timeout=timeout)
+    except _a.TimeoutError:
+        return ""
+    except Exception:
+        return ""
     if not results:
         return ""
-    return "Проверка в интернете:\n" + format_search_results(results, max_items=3)
+    return format_search_results(results, max_items=2)

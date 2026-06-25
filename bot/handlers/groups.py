@@ -36,7 +36,7 @@ from bot.context import (
     strip_mention, recent_messages_to_text, build_group_context,
 )
 from bot.mood import update_mood_from_message, current_mood_descriptor
-from bot.media_handler import get_photo_data_uri, extract_caption
+from bot.media_handler import extract_caption
 from bot.partners import partner_manager
 from bot.web_search import verify_claim
 from ai.router import ai_router
@@ -109,9 +109,12 @@ async def _should_respond(message: Message) -> bool:
     return random.random() < config.GROUP_PROACTIVE_PROB
 
 
-async def _generate_group_response(message: Message, text: str, directed: bool,
-                                    image_data_uri: str = None) -> str:
-    """Generate Lyuba's group response. Returns text or empty string."""
+async def _generate_group_response(message: Message, text: str, directed: bool) -> str:
+    """Generate Lyuba's group response. Returns text or empty string.
+
+    Vision is DISABLED in groups (resource saving) — group photos are handled
+    by their caption text only.
+    """
     # Load recent context + memory
     recent = await db.get_recent_group_messages(message.chat.id, limit=10)
     recent_text = recent_messages_to_text(recent, limit=8)
@@ -153,18 +156,11 @@ async def _generate_group_response(message: Message, text: str, directed: bool,
     except Exception as e:
         logger.debug(f"site content error: {e}")
 
-    # Vision: if there's an image, describe it first (append to context)
-    if image_data_uri:
-        try:
-            vision = await asyncio.wait_for(
-                ai_router.vision(image_data_uri, "Коротко опиши что на фото (1-2 предложения).",
-                                 system_prompt=""),
-                timeout=30.0,
-            )
-            if vision.ok:
-                extra_ctx += f"\n\nЧТО НА ФОТО (ты это видишь): {vision.text[:300]}"
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.debug(f"vision in group failed: {e}")
+    # Vision DISABLED in groups per design (resource saving).
+    # Group photos are handled by their caption text only — Lyuba reacts to
+    # the textual context of events, not the image bytes. This keeps groups
+    # fast and cheap. (Vision stays enabled for private 1-on-1 chats.)
+    # If a photo has no caption, we note "(фото без подписи)" in the prompt.
 
     # Web verification (concurrent, best-effort)
     verify_task = None
@@ -227,11 +223,16 @@ async def handle_group_photo(message: Message):
         return
 
     directed = is_directed_at_lyuba(message)
-    data_uri = await get_photo_data_uri(message.bot, message.photo)
+    # Vision disabled in groups — don't download the photo (saves bandwidth +
+    # CPU). Lyuba reacts to the caption text only.
+    # If no caption, use a placeholder so the model knows it's a photo.
+    photo_note = ""
+    if not caption:
+        photo_note = "(прислали фото без подписи — прокомментируй коротко, предположи что там может быть по контексту чата)"
 
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     try:
-        out = await _generate_group_response(message, caption or "", directed, image_data_uri=data_uri)
+        out = await _generate_group_response(message, caption or photo_note, directed)
     except Exception as e:
         logger.error(f"group photo response error: {e}")
         return
