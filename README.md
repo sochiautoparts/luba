@@ -148,29 +148,18 @@ ai/
 - `/channel_on <id>` / `/channel_off <id>` (владелец) — вкл/выкл комментарии канала
 - `/broadcast <chat_id> <text>` (владелец) — отправить сообщение
 
-## 🔑 Включение GitHub Models (gpt-4o-mini, gpt-4o, Llama-3.1-405B)
+## 🔑 AI-модели (настроено)
 
-GitHub Models — бесплатный AI-каталог от GitHub. Для доступа нужен **fine-grained PAT**
-с permission "Models: Read-only" (НЕ classic PAT — в нём нет такого scope).
+Бот использует бесплатный HuggingFace токен (`HF_TOKEN` секрет установлен).
+Primary cloud-модель: **Qwen/Qwen2.5-7B-Instruct** через HuggingFace router
+(router.huggingface.co) — работает быстро (~0.8с) и стабильно.
 
-1. Открой **https://github.com/settings/personal-access-tokens/new** (fine-grained PAT)
-2. Token name: `Lyuba GitHub Models`
-3. Resource owner: `sochiautoparts`
-4. Expiration: 90 дней
-5. Repository access: Public Repositories
-6. **ВАЖНО — Account permissions** (НЕ Repository permissions!):
-   - Найди раздел **"Account permissions"**
-   - Найди **"Models"** в списке
-   - Установи **"Read-only"**
-7. Generate token → скопируй `github_pat_...`
-8. В репозитории: Settings → Secrets → Actions → **New secret**:
-   - Name: `GH_MODELS_TOKEN`
-   - Value: токен
-9. Готово! При следующем запуске gpt-4o-mini станет primary cloud-моделью
+Полная цепочка AI (failover):
+1. Локальная RuadaptQwen3-4B (primary, приватность)
+2. HuggingFace Qwen2.5-7B (0.8с, работает)
+3. Groq / Gemini / OpenRouter / Cloudflare (если добавить ключи)
+4. Pollinations openai (free, всегда доступен)
+5. Статический fallback
 
-**Лимиты GitHub Models (бесплатно):** ~3000 req/день для gpt-4o-mini, ~150 req/день для gpt-4o.
-
-## 🔑 HuggingFace (уже настроен)
-
-`HF_TOKEN` секрет уже установлен. Бот использует `Qwen/Qwen2.5-7B-Instruct` через
-HuggingFace router (router.huggingface.co) — работает быстро (~0.8с) и стабильно.
+Опциональные провайдеры (Groq/Gemini/OpenRouter/Cloudflare) автовключаются
+при добавлении соответствующих секретов в Settings → Secrets.

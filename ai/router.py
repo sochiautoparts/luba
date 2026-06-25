@@ -362,20 +362,19 @@ class AIRouter:
         return AIResponse(text=fb, provider="static", model="fallback")
 
     def _cloud_chain(self, route_type: str) -> List[BaseAIProvider]:
-        """Order of cloud providers to try concurrently."""
+        """Order of cloud providers to try concurrently.
+
+        Both routes now use the same priority: optional keyed providers first
+        (HuggingFace Qwen2.5-7B is fast + reliable), then Pollinations free.
+        The concurrent fan-out means the first SUCCESS wins.
+        """
         chain: List[BaseAIProvider] = []
-        if route_type == "comment":
-            # Comments: prefer Pollinations free (privacy/local-first already tried)
-            chain.append(self._pollinations_free)
-            if self._pollinations_key:
-                chain.append(self._pollinations_key)
-            chain.extend(self._optional)
-        else:
-            # Chat: prefer optional keyed (better quality) then pollinations
-            chain.extend(self._optional)
-            if self._pollinations_key:
-                chain.append(self._pollinations_key)
-            chain.append(self._pollinations_free)
+        # Optional keyed providers (HuggingFace, Groq, etc.) — better quality + faster
+        chain.extend(self._optional)
+        # Pollinations as fallback (always available, no key needed)
+        if self._pollinations_key:
+            chain.append(self._pollinations_key)
+        chain.append(self._pollinations_free)
         return chain
 
     async def _safe_call(self, provider: BaseAIProvider, messages: List[Dict[str, str]],

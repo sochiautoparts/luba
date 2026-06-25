@@ -192,9 +192,6 @@ jobs:
           POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
           POLLINATIONS_API_KEY_2: ${{ secrets.POLLINATIONS_API_KEY_2 }}
           # Optional free cloud providers (auto-enabled if key present)
-          # GitHub Models — free AI catalog (gpt-4o, gpt-4o-mini, Llama-3.1-405B)
-          # Needs a classic PAT with 'models' scope
-          GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -219,10 +216,10 @@ jobs:
           DB_PATH: luba.db
           ADMITAD_ADS_FILE: data/partners.json
           PARTNERS_URL: "https://sochiautoparts.ru/partners.json"
-          # Group activity — ACTIVE in groups, within Telegram limits (~20 msg/min/group)
+          # Group activity — VERY ACTIVE in groups, within Telegram limits (~20 msg/min/group)
           # safe_send handles RetryAfter (waits + retries). Directed mentions ALWAYS answered.
-          GROUP_PROACTIVE_PROB: "0.35"
-          GROUP_MIN_INTERVAL: "10"
+          GROUP_PROACTIVE_PROB: "0.45"
+          GROUP_MIN_INTERVAL: "8"
           GROUP_MAX_PER_MINUTE: "15"
           GROUP_MEMORY_SIZE: "30"
           LOG_LEVEL: INFO
