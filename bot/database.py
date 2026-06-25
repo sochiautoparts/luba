@@ -313,6 +313,13 @@ async def touch_channel_comment(chat_id: int) -> None:
         await db.commit()
 
 
+async def get_channel_last_commented(chat_id: int) -> float:
+    async with _connect_db() as db:
+        async with db.execute("SELECT last_commented FROM channels WHERE chat_id=?", (chat_id,)) as cur:
+            row = await cur.fetchone()
+            return row["last_commented"] if row else 0.0
+
+
 # ── Mood ──────────────────────────────────────────────────────────────────────
 
 async def get_mood() -> Dict[str, Any]:

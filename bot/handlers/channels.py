@@ -43,7 +43,7 @@ def _is_politics_or_war(text: str) -> bool:
     return any(w in t for w in triggers)
 
 
-@channel_router.channel_post(F.text | F.photo | F.media_group)
+@channel_router.channel_post(F.text | F.photo)
 async def handle_channel_post(message: Message):
     chat: Chat = message.chat
     await db.upsert_channel(chat.id, username=chat.username or "", title=chat.title or "")
@@ -52,15 +52,8 @@ async def handle_channel_post(message: Message):
     if not await db.is_channel_enabled(chat.id):
         return
 
-    # Min interval
-    ch = await db.get_group_memory(chat.id, limit=1)
-    # Use last_commented from channels table
-    import aiosqlite
-    from bot.database import _connect_db
-    async with _connect_db() as dbcon:
-        async with dbcon.execute("SELECT last_commented FROM channels WHERE chat_id=?", (chat.id,)) as cur:
-            row = await cur.fetchone()
-            last = row["last_commented"] if row else 0
+    # Min interval between comments on the same channel
+    last = await db.get_channel_last_commented(chat.id)
     if (time.time() - last) < CHANNEL_MIN_INTERVAL:
         return
 
@@ -72,9 +65,8 @@ async def handle_channel_post(message: Message):
     if _is_politics_or_war(post_text):
         return
 
-    # If media group, only comment on the first item
+    # Skip albums (media groups) to avoid commenting on every photo
     if message.media_group_id:
-        # Simplistic: skip subsequent items in a group (avoid duplicate comments)
         return
 
     await message.bot.send_chat_action(chat.id, ChatAction.TYPING)

@@ -149,29 +149,29 @@ async def _generate_group_response(message: Message, text: str, directed: bool,
     if _needs_verification(text) and random.random() < config.WEB_VERIFY_PROB:
         verify_task = asyncio.create_task(verify_claim(text[:200]))
 
-    route = "chat" if directed else "comment"
+    # Always use the comment() path for groups — it does NOT touch the user's
+    # private chat_history (group context comes from extra_context above).
+    # The extra_context already tells Lyuba whether the message is directed at her.
     prompt = strip_mention(text) if directed else text
     if not prompt:
         prompt = "(сообщение без текста — прокомментируй контекст чата)"
+    if directed:
+        prompt = "Тебе пишут напрямую (адресовано тебе). Ответь живо, можно чуть подробнее.\n" + prompt
 
     try:
         resp = await asyncio.wait_for(
-            ai_router.comment(prompt, extra_context=extra_ctx, mood=mood, route_type=route)
-            if route == "comment"
-            else ai_router.chat(
-                user_id=message.from_user.id if message.from_user else 0,
-                message=prompt,
-                extra_context=extra_ctx,
-                route_type="chat",
-                mood=mood,
-                max_chars=config.GROUP_MAX_CHARS,
-            ),
+            ai_router.comment(prompt, extra_context=extra_ctx, mood=mood, route_type="comment"),
             timeout=45.0,
         )
     except asyncio.TimeoutError:
         return ""
 
     out = resp.text or ""
+
+    # Allow slightly longer replies for directed group messages
+    limit = config.GROUP_MAX_CHARS if directed else config.COMMENT_MAX_CHARS
+    if out:
+        out = out[:limit]
 
     # Append verification if needed
     if verify_task is not None:
