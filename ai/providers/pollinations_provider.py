@@ -27,15 +27,16 @@ from bot.config import config
 
 logger = logging.getLogger("luba.ai.pollinations")
 
-# Pollinations models — verified available (June 2025).
-# `openai` and `openai-fast` are the same GPT-OSS 20B model.
-# Other model names (mistral, deepseek, etc.) MAY return 404 OR 429:
-#   - 404 = permanently removed (skip)
-#   - 429 = temporarily overloaded (retry later, do NOT disable)
-# We keep a broader candidate list and try each; 429s trigger a short sleep+retry.
-CHAT_MODELS = ["openai", "openai-fast", "mistral", "deepseek"]
-# Models confirmed to return 404 "Model not found" — skip these permanently
-_DISABLED_MODELS = {"searchgpt", "roblox", "unity", "evil", "nova", "midijourney"}
+# Pollinations models — verified June 2025.
+# Only `openai` and `openai-fast` (same GPT-OSS 20B) are live.
+# mistral/deepseek/qwen-coder return 404 "Model not found" (permanently removed
+# from the legacy text API) — AND mistral hangs 12s on the GET endpoint before
+# timing out, which wastes latency. They are NOT temporarily unavailable (429);
+# they are gone (404). Removed from CHAT_MODELS to avoid 13s wasted time.
+# 429 retry logic kept in _try_post for any model that comes back temporarily.
+CHAT_MODELS = ["openai", "openai-fast"]
+_DISABLED_MODELS = {"searchgpt", "roblox", "unity", "evil", "nova", "midijourney",
+                    "mistral", "deepseek", "qwen-coder"}
 VISION_MODEL = "openai"
 
 

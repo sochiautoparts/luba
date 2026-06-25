@@ -27,8 +27,7 @@ logger = logging.getLogger("luba.channels")
 channel_router = Router()
 
 # Probability Lyuba reacts to a channel post (0.0-1.0)
-# Higher = more active, but keep reasonable to avoid looking spammy.
-CHANNEL_REACTION_PROB = 0.65
+# Uses config.CHANNEL_REACTION_PROB (default 0.5) — single source of truth.
 
 
 def _is_politics_or_war(text: str) -> bool:
@@ -53,7 +52,7 @@ async def handle_channel_post(message: Message):
         return
 
     # Probabilistic reaction (don't react to EVERY post — feels more natural)
-    if random.random() > CHANNEL_REACTION_PROB:
+    if random.random() > config.CHANNEL_REACTION_PROB:
         return
 
     post_text = (message.caption or message.text or "").strip()

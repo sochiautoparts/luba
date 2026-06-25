@@ -230,33 +230,33 @@ async def handle_group_photo(message: Message):
     if _is_politics_or_war(caption):
         return
 
-    # ALWAYS set a reaction on photos (feels alive, no text spam)
-    try:
-        from bot.reactions import maybe_react
-        asyncio.create_task(maybe_react(message.bot, message.chat.id, message.message_id, caption or "",
-                                        prob=0.4))
-    except Exception:
-        pass
-
-    # Text response ONLY when directed at Lyuba (mention/reply to her)
-    directed = is_directed_at_lyuba(message)
-    if not directed:
-        return  # photo without mention → just reaction, no text
-
-    # Skip albums (media groups) — only respond to the first photo
+    # Skip albums (media groups) entirely — don't react to every photo in a batch
     if message.media_group_id:
         return
 
-    # Directed photo: respond based on caption text (vision disabled in groups)
-    photo_note = ""
-    if not caption:
-        photo_note = "(тебе прислали фото без подписи — коротко отреагируй)"
-    else:
-        photo_note = caption
+    # React to photos with LOW probability, only if there's a caption.
+    # This prevents the bot from reacting to every single image in the chat
+    # (which felt spammy). Photos without captions get no reaction at all.
+    if caption and random.random() < 0.10:
+        try:
+            from bot.reactions import maybe_react
+            asyncio.create_task(maybe_react(
+                message.bot, message.chat.id, message.message_id, caption,
+                prob=1.0,  # already rolled above
+            ))
+        except Exception:
+            pass
+
+    # Text response ONLY when directed at Lyuba (mention/reply to her)
+    # AND only if there's a caption to respond to. Photos without captions
+    # get no text response (avoids AI fallback spam like "ой, застряла").
+    directed = is_directed_at_lyuba(message)
+    if not directed or not caption:
+        return  # no text response for photos without caption
 
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     try:
-        out = await _generate_group_response(message, photo_note, directed)
+        out = await _generate_group_response(message, caption, directed)
     except Exception as e:
         logger.error(f"group photo response error: {e}")
         return
