@@ -107,6 +107,17 @@ async def _should_respond(message: Message) -> bool:
     if message.sender_chat and message.sender_chat.type == "channel":
         return random.random() < config.GROUP_PROACTIVE_PROB
 
+    # If this message is a REPLY to another user (a discussion thread),
+    # Lyuba is MORE likely to join the conversation. This makes her participate
+    # in ongoing dialogues between other people.
+    if message.reply_to_message and message.reply_to_message.from_user:
+        if message.reply_to_message.from_user.id != config.BOT_ID:
+            # Reply to another user = active discussion → higher chance to join
+            last_bot = await db.last_bot_message_time(message.chat.id)
+            if (time.time() - last_bot) < config.GROUP_MIN_INTERVAL:
+                return False
+            return random.random() < (config.GROUP_PROACTIVE_PROB + 0.2)  # +20% for discussions
+
     # Proactive: high probability, but respect min interval to avoid flood
     last_bot = await db.last_bot_message_time(message.chat.id)
     if (time.time() - last_bot) < config.GROUP_MIN_INTERVAL:
@@ -179,9 +190,12 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     # The extra_context already tells Lyuba whether the message is directed at her.
     prompt = strip_mention(text) if directed else text
     if not prompt:
-        prompt = "(сообщение без текста — прокомментируй контекст чата)"
+        prompt = "(сообщение без текста — прокомментируй контекст чата, вступи в беседу)"
     if directed:
-        prompt = "Тебе пишут напрямую (адресовано тебе). Ответь живо, можно чуть подробнее.\n" + prompt
+        prompt = "Тебе пишут напрямую (адресовано тебе). Ответь живо, можно чуть подробнее. Обратись по имени если уместно.\n" + prompt
+    else:
+        # Proactive: encourage joining the discussion and addressing the speaker
+        prompt = "Вступи в беседу — прокомментируй это сообщение живо. Ответь участнику, задай вопрос или поделись мнением. Обратись по имени если уместно.\n" + prompt
 
     try:
         resp = await asyncio.wait_for(
