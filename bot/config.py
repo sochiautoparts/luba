@@ -76,8 +76,11 @@ class BotConfig:
     GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.12"))
     GROUP_MIN_INTERVAL: int = int(os.getenv("GROUP_MIN_INTERVAL", "25"))
     GROUP_MEMORY_SIZE: int = int(os.getenv("GROUP_MEMORY_SIZE", "30"))
-    # Max messages Lyuba sends per minute in a single group (flood safety)
-    GROUP_MAX_PER_MINUTE: int = int(os.getenv("GROUP_MAX_PER_MINUTE", "3"))
+    # Max messages Lyuba sends per minute in a single group (flood safety).
+    # Telegram's hard limit is ~20 msg/min/group. Directed messages (mentions/
+    # replies) use 3x this cap via safe_send(priority=True) so they're never
+    # silently dropped. Proactive comments use this base cap.
+    GROUP_MAX_PER_MINUTE: int = int(os.getenv("GROUP_MAX_PER_MINUTE", "5"))
 
     # ── Web verification ──
     SEARCH_TIMEOUT_SECONDS: int = int(os.getenv("SEARCH_TIMEOUT_SECONDS", "6"))

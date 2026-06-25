@@ -247,16 +247,22 @@ async def handle_group_photo(message: Message):
         except Exception:
             pass
 
-    # Text response ONLY when directed at Lyuba (mention/reply to her)
-    # AND only if there's a caption to respond to. Photos without captions
-    # get no text response (avoids AI fallback spam like "ой, застряла").
+    # Text response ONLY when directed at Lyuba (mention/reply to her).
+    # Non-directed photos get NO text response (avoids spam).
+    # But if DIRECTED, ALWAYS respond — even without caption (use generic prompt).
     directed = is_directed_at_lyuba(message)
-    if not directed or not caption:
-        return  # no text response for photos without caption
+    if not directed:
+        return  # photo without mention → just reaction, no text
+
+    # Directed photo: respond. Use caption if available, else generic prompt.
+    if caption:
+        photo_prompt = caption
+    else:
+        photo_prompt = "(тебе прислали фото без подписи — коротко отреагируй, предположи что там может быть)"
 
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     try:
-        out = await _generate_group_response(message, caption, directed)
+        out = await _generate_group_response(message, photo_prompt, directed)
     except Exception as e:
         logger.error(f"group photo response error: {e}")
         return
@@ -264,7 +270,7 @@ async def handle_group_photo(message: Message):
         return
     try:
         from bot.safe_send import safe_reply
-        await safe_reply(message.bot, message, out, always_reply=True)
+        await safe_reply(message.bot, message, out, always_reply=True, priority=directed)
     except Exception as e:
         logger.debug(f"safe_reply (photo) failed: {e}")
     await _log_group_message(message, content=out, is_media=False, is_bot=True)
@@ -313,11 +319,11 @@ async def handle_group_text(message: Message):
     if not out:
         return
     # ALWAYS reply (thread) to the user's message — so it's clear WHO Lyuba
-    # is answering. This is the correct Telegram pattern for group chats.
-    # safe_reply handles TelegramRetryAfter + per-chat rate limit + fallback.
+    # is answering. priority=True for directed messages (higher rate-limit cap,
+    # never silently dropped).
     try:
         from bot.safe_send import safe_reply
-        await safe_reply(message.bot, message, out, always_reply=True)
+        await safe_reply(message.bot, message, out, always_reply=True, priority=directed)
     except Exception as e:
         logger.debug(f"safe_reply failed: {e}")
     await _log_group_message(message, content=out, is_media=False, is_bot=True)

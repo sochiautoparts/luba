@@ -45,11 +45,14 @@ async def safe_send(
     text: str,
     reply_to_message_id: Optional[int] = None,
     max_retries: int = 2,
+    priority: bool = False,
 ) -> bool:
     """Send a message with flood-control handling.
 
     - If Telegram says RetryAfter X, waits X seconds and retries.
     - Respects per-chat rate limit (GROUP_MAX_PER_MINUTE).
+    - priority=True (directed messages/mentions) uses a HIGHER limit so
+      direct mentions are never silently dropped.
     - Falls back from reply → answer on bad-request errors.
 
     Returns True if sent, False otherwise.
@@ -58,8 +61,11 @@ async def safe_send(
 
     # Per-chat rate limit (only for group chats; private always allowed)
     if str(chat_id).startswith("-"):
-        if not await _check_rate(chat_id, config.GROUP_MAX_PER_MINUTE):
-            logger.warning(f"Rate limit hit for chat {chat_id} — skipping send (flood safety)")
+        # Directed messages (mentions/replies) get a higher cap — they should
+        # NEVER be silently dropped. Proactive comments use the lower cap.
+        cap = config.GROUP_MAX_PER_MINUTE * 3 if priority else config.GROUP_MAX_PER_MINUTE
+        if not await _check_rate(chat_id, cap):
+            logger.warning(f"Rate limit hit for chat {chat_id} (cap={cap}) — skipping send (flood safety)")
             return False
 
     last_err = None
@@ -104,12 +110,16 @@ async def safe_reply(
     target_message,
     text: str,
     always_reply: bool = True,
+    priority: bool = False,
 ) -> bool:
     """Reply to a specific message (threaded). Falls back to answer.
 
     If always_reply=True (default), Lyuba's response is threaded under the
     user's message — so it's clear WHO she's replying to. This is the
     recommended Telegram pattern for group conversations.
+    priority=True should be set for directed messages (mentions/replies) so
+    they use a higher rate-limit cap and are never silently dropped.
     """
     reply_to = target_message.message_id if always_reply else None
-    return await safe_send(bot, target_message.chat.id, text, reply_to_message_id=reply_to)
+    return await safe_send(bot, target_message.chat.id, text,
+                           reply_to_message_id=reply_to, priority=priority)
