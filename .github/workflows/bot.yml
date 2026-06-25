@@ -1,0 +1,294 @@
+name: Lyuba Bot — LOCAL-FIRST + FREE CLOUD FAILOVER
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lyuba (@asluba_bot) — живой собеседник, активный в группах и комментариях.
+#
+#   - LOCAL MODEL: RuadaptQwen3-4B-Instruct Q4_K_M (~2.3GB GGUF, CPU inference)
+#     (same as Asya — privacy-safe group comments never leave the machine)
+#   - FREE CLOUD FAILOVER: optional Groq/OpenRouter/Gemini/Cloudflare/HF (when keys set)
+#     + Pollinations FREE (no auth — always available)
+#   - ACTIVE IN GROUPS: responds to all, proactive comments (Privacy Mode OFF required)
+#   - COMMENTS ON CHANNEL POSTS
+#   - 4-LEVEL FAILOVER: Local → optional cloud → Pollinations-free → static
+#   - Model + DB caching via actions/cache@v4
+#   - 24/7 via schedule + self-dispatch
+#
+# Schedule (UTC, Moscow = UTC+3): every 5 hours
+# ══════════════════════════════════════════════════════════════════════════════
+
+on:
+  schedule:
+    - cron: '0 0 * * *'      # 03:00 Moscow
+    - cron: '0 5 * * *'      # 08:00 Moscow
+    - cron: '0 10 * * *'     # 13:00 Moscow
+    - cron: '0 15 * * *'     # 18:00 Moscow
+    - cron: '0 20 * * *'     # 23:00 Moscow
+  workflow_dispatch:
+
+concurrency:
+  group: lyuba-bot-single
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345  # ~5h45m
+
+    steps:
+      - name: Cancel conflicting runs and wait
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+        run: |
+          echo "=== Checking for other running bot instances ==="
+          CURRENT_RUN=${{ github.run_id }}
+          REPO=${{ github.repository }}
+          for status in in_progress queued; do
+            RUNS=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/$REPO/actions/runs?status=$status&per_page=10" \
+              | python3 -c '
+          import sys, json
+          try:
+              d = json.load(sys.stdin)
+              for r in d.get("workflow_runs", []):
+                  if r["id"] != int(sys.argv[1]):
+                      print(r["id"])
+          except: pass
+          ' "$CURRENT_RUN")
+            for run_id in $RUNS; do
+              echo "Cancelling $status run: $run_id"
+              curl -s -X POST -H "Authorization: token $GH_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/$REPO/actions/runs/$run_id/cancel" || true
+            done
+          done
+          echo "Waiting 60s for old bot instances to fully stop..."
+          sleep 60
+          echo "=== Ready to start ==="
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          sudo apt-get update -qq && sudo apt-get install -y -qq libopenblas-dev
+          CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install 'llama-cpp-python>=0.3.0' --no-cache-dir
+          pip install -r requirements.txt
+
+      - name: Clean Python cache
+        run: |
+          find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+          find . -type f -name "*.pyc" -delete 2>/dev/null || true
+          rm -f '=0.3.0'
+          echo "Python cache cleaned"
+
+      - name: Create data directory
+        run: mkdir -p data models
+
+      - name: Download partner data
+        run: |
+          mkdir -p data
+          HTTP_CODE=$(curl -sL -o /tmp/partners_check.json -w "%{http_code}" "https://sochiautoparts.ru/partners.json")
+          if [ "$HTTP_CODE" = "200" ]; then
+            if python3 -c "import json; json.load(open('/tmp/partners_check.json'))" 2>/dev/null; then
+              cp /tmp/partners_check.json data/partners.json
+              echo "Partner data downloaded successfully"
+            else
+              echo "WARNING: Downloaded file is not valid JSON, skipping"
+            fi
+          else
+            echo "Failed to download partner data (HTTP $HTTP_CODE)"
+          fi
+
+      - name: Restore database cache
+        uses: actions/cache@v4
+        with:
+          path: luba.db
+          key: lyuba-bot-db-v1
+          restore-keys: |
+            lyuba-bot-db-
+
+      - name: Cache local model
+        uses: actions/cache@v4
+        with:
+          path: models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf
+          key: ruadapt-qwen3-4b-instruct-q4km-lyuba-v1
+          restore-keys: |
+            ruadapt-qwen3-4b-
+
+      - name: Download local model (if not cached)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          mkdir -p models
+          if [ -f "models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf" ]; then
+            SIZE=$(stat -c%s "models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf" 2>/dev/null || echo 0)
+            SIZE_MB=$((SIZE / 1048576))
+            echo "Model file found in cache: ${SIZE_MB} MB"
+            if [ "$SIZE_MB" -lt 100 ]; then
+              echo "Cached file too small, removing..."
+              rm -f models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf
+            fi
+          fi
+          if [ ! -f "models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf" ]; then
+            echo "Downloading RuadaptQwen3-4B-Instruct Q4_K_M (~2.3GB)..."
+            pip install -q huggingface_hub
+            if [ -n "$HF_TOKEN" ]; then
+              huggingface-cli download RefalMachine/RuadaptQwen3-4B-Instruct-GGUF Q4_K_M.gguf --local-dir models --token "$HF_TOKEN" || true
+            else
+              huggingface-cli download RefalMachine/RuadaptQwen3-4B-Instruct-GGUF Q4_K_M.gguf --local-dir models || true
+            fi
+            if [ -f "models/Q4_K_M.gguf" ] && [ ! -f "models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf" ]; then
+              mv models/Q4_K_M.gguf models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf
+            fi
+            if [ ! -f "models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf" ]; then
+              curl -L --retry 3 --max-time 600 \
+                -o models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf \
+                "https://huggingface.co/RefalMachine/RuadaptQwen3-4B-Instruct-GGUF/resolve/main/Q4_K_M.gguf" || true
+            fi
+          fi
+          if [ -f "models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf" ]; then
+            SIZE=$(stat -c%s "models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf" 2>/dev/null || echo 0)
+            SIZE_MB=$((SIZE / 1048576))
+            echo "Model file: ${SIZE_MB} MB"
+            if [ "$SIZE_MB" -lt 100 ]; then
+              echo "ERROR: Model file too small, running in cloud-only mode"
+              echo "ENABLE_LOCAL_MODEL=false" >> $GITHUB_ENV
+            fi
+          else
+            echo "WARNING: Model download failed, running in cloud-only mode"
+            echo "ENABLE_LOCAL_MODEL=false" >> $GITHUB_ENV
+          fi
+
+      - name: Ensure .gitignore allows database
+        run: |
+          if [ -f .gitignore ]; then
+            sed -i '/luba\.db/d' .gitignore
+          fi
+
+      - name: Run Lyuba Bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          BOT_USERNAME: "@asluba_bot"
+          BOT_ID: "8614302697"
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          # Pollinations (free, no auth needed)
+          POLLINATIONS_FREE_TEXT_URL: "https://text.pollinations.ai"
+          POLLINATIONS_FREE_IMAGE_URL: "https://image.pollinations.ai"
+          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
+          POLLINATIONS_API_KEY_2: ${{ secrets.POLLINATIONS_API_KEY_2 }}
+          # Optional free cloud providers (auto-enabled if key present)
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CF_ACCOUNT_ID_1: ${{ secrets.CF_ACCOUNT_ID_1 }}
+          CF_API_TOKEN_1: ${{ secrets.CF_API_TOKEN_1 }}
+          CF_ACCOUNT_ID_2: ${{ secrets.CF_ACCOUNT_ID_2 }}
+          CF_API_TOKEN_2: ${{ secrets.CF_API_TOKEN_2 }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # GitHub PAT for self-dispatch
+          GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+          GH_REPO: sochiautoparts/luba
+          # Local model
+          ENABLE_LOCAL_MODEL: ${{ env.ENABLE_LOCAL_MODEL || 'true' }}
+          MODEL_PATH: "models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf"
+          MODEL_N_CTX: "8192"
+          MODEL_N_THREADS: "3"
+          MODEL_MAX_TOKENS: "1024"
+          MODEL_AUTO_DOWNLOAD: "true"
+          MODEL_DOWNLOAD_URL: "https://huggingface.co/RefalMachine/RuadaptQwen3-4B-Instruct-GGUF/resolve/main/Q4_K_M.gguf"
+          # Database
+          DB_PATH: luba.db
+          ADMITAD_ADS_FILE: data/partners.json
+          PARTNERS_URL: "https://sochiautoparts.ru/partners.json"
+          # Group activity
+          GROUP_PROACTIVE_PROB: "0.35"
+          GROUP_MIN_INTERVAL: "12"
+          GROUP_MEMORY_SIZE: "30"
+          LOG_LEVEL: INFO
+        run: |
+          echo "=== Starting Lyuba Bot ==="
+          echo "LOCAL MODEL: RuadaptQwen3-4B (PRIMARY for chat/comments)"
+          echo "CLOUD: Pollinations free (always) + optional Groq/Gemini/OpenRouter/CF/HF"
+          echo "STRATEGY: LOCAL-first (chat/comments) / cloud fallback"
+          echo "=== Launching with UNLIMITED auto-restart ==="
+          RETRY=0
+          while true; do
+            RETRY=$((RETRY+1))
+            echo "--- Attempt $RETRY ---"
+            python3 -m bot.main
+            EXIT_CODE=$?
+            echo "Bot exited with code $EXIT_CODE (attempt $RETRY)"
+            if [ $EXIT_CODE -eq 0 ]; then
+              sleep 5
+            elif [ $RETRY -le 3 ]; then
+              sleep 10
+            elif [ $RETRY -le 6 ]; then
+              sleep 15
+            else
+              sleep 30
+            fi
+          done
+
+      - name: Save database cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: luba.db
+          key: lyuba-bot-db-v1-${{ github.run_id }}
+
+      - name: Save database to git
+        if: always()
+        run: |
+          if [ -f luba.db ]; then
+            git config user.name "Lyuba Bot"
+            git config user.email "lyuba-bot@users.noreply.github.com"
+            rm -f '=0.3.0'
+            git add -f luba.db || true
+            git diff --staged --quiet || git commit -m "db: update $(date +%Y-%m-%d_%H:%M)" || true
+            git add -A || true
+            git stash --include-untracked || true
+            git pull --rebase origin main || true
+            git stash pop || true
+            git push || true
+          fi
+
+      - name: Re-dispatch workflow for 24/7
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+        run: |
+          echo "=== Re-dispatching workflow for 24/7 ==="
+          REPO=${{ github.repository }}
+          sleep 10
+          for i in 1 2 3; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO/actions/workflows/bot.yml/dispatches" \
+              -d '{"ref":"main"}')
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "Workflow re-dispatched successfully (attempt $i)"
+              break
+            fi
+            echo "Re-dispatch attempt $i failed (HTTP $HTTP_CODE), retrying in 10s..."
+            sleep 10
+          done
+
+      - name: Cleanup
+        if: always()
+        run: echo "=== Bot session ended ==="
