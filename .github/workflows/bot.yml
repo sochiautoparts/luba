@@ -221,19 +221,32 @@ jobs:
           GROUP_MEMORY_SIZE: "30"
           LOG_LEVEL: INFO
         run: |
+          set +e  # CRITICAL: disable exit-on-error so the retry loop survives segfaults (exit 139)
           echo "=== Starting Lyuba Bot ==="
           echo "LOCAL MODEL: RuadaptQwen3-4B (PRIMARY for chat/comments)"
           echo "CLOUD: Pollinations free (always) + optional Groq/Gemini/OpenRouter/CF/HF"
           echo "STRATEGY: LOCAL-first (chat/comments) / cloud fallback"
+          echo "STABILITY: anti-segfault generation guard + unlimited auto-restart"
           echo "=== Launching with UNLIMITED auto-restart ==="
           RETRY=0
+          LAST_START=0
           while true; do
             RETRY=$((RETRY+1))
-            echo "--- Attempt $RETRY ---"
+            echo "--- Attempt $RETRY (started $(date -u +%H:%M:%SZ)) ---"
+            # Reset retry counter if last run lasted >10 min (stable run, not a crash loop)
+            NOW=$(date +%s)
+            if [ $((NOW - LAST_START)) -gt 600 ]; then
+              RETRY=1
+            fi
+            LAST_START=$NOW
             python3 -m bot.main
             EXIT_CODE=$?
-            echo "Bot exited with code $EXIT_CODE (attempt $RETRY)"
-            if [ $EXIT_CODE -eq 0 ]; then
+            echo "Bot exited with code $EXIT_CODE (attempt $RETRY) at $(date -u +%H:%M:%SZ)"
+            # 0 = clean exit (session timeout), 139 = segfault, 1 = exception, 2/3 = special
+            if [ $EXIT_CODE -eq 139 ]; then
+              echo "⚠ Segfault detected — local model thread conflict. Restarting in 15s."
+              sleep 15
+            elif [ $EXIT_CODE -eq 0 ]; then
               sleep 5
             elif [ $RETRY -le 3 ]; then
               sleep 10

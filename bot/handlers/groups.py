@@ -131,6 +131,28 @@ async def _generate_group_response(message: Message, text: str, directed: bool,
     except Exception as e:
         logger.debug(f"partner links error: {e}")
 
+    # Channel recommendations context (so Lyuba can suggest subscribing)
+    extra_ctx += (
+        "\n\nРЕКОМЕНДАЦИИ (только если к месту, ~1 из 8 сообщений):\n"
+        "- Каналы: https://t.me/sochiautoparts (авто-новости), https://t.me/bmw_mpower_club (BMW клуб)\n"
+        "- Магазин: https://sochiautoparts.ru/shop | Статьи: https://sochiautoparts.ru"
+    )
+
+    # Occasionally include a real product / post from the site for context
+    try:
+        if random.random() < 0.3:
+            from bot import site_content as sc
+            prod = await sc.relevant_product(text) if text else await sc.random_product()
+            if prod:
+                extra_ctx += "\n\nСЛУЧАЙНЫЙ ТОВАР ИЗ МАГАЗИНА (можешь упомянуть если к месту):\n" + sc.format_product_for_context(prod)
+        if random.random() < 0.15:
+            from bot import site_content as sc
+            post = await sc.random_post()
+            if post:
+                extra_ctx += "\n\nСВЕЖИЙ ПОСТ НА САЙТЕ: " + sc.format_post_for_context(post)
+    except Exception as e:
+        logger.debug(f"site content error: {e}")
+
     # Vision: if there's an image, describe it first (append to context)
     if image_data_uri:
         try:
@@ -239,6 +261,14 @@ async def handle_group_text(message: Message):
     # Log the message
     await _log_group_message(message, content=text, is_media=False, is_bot=False)
     await update_mood_from_message(text)
+
+    # Set a reaction (like) on some messages Lyuba reads — feels alive.
+    # This runs even when she doesn't reply (proactive engagement).
+    try:
+        from bot.reactions import maybe_react
+        asyncio.create_task(maybe_react(message.bot, message.chat.id, message.message_id, text))
+    except Exception:
+        pass
 
     # Skip commands (unless directed at Lyuba)
     if text.startswith("/") and not is_directed_at_lyuba(message):

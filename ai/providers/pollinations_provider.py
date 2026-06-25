@@ -22,8 +22,9 @@ from bot.config import config
 logger = logging.getLogger("luba.ai.pollinations")
 
 # Models — Pollinations exposes many via the openai-compatible endpoint.
-# We prefer strong free chat models. Order = preference.
-CHAT_MODELS = ["openai", "mistral", "qwen-coder", "deepseek"]
+# We try them in order; the free endpoint sometimes rate-limits one model
+# but serves another, so rotating improves availability.
+CHAT_MODELS = ["openai", "mistral", "deepseek", "qwen-coder"]
 VISION_MODEL = "openai"  # vision-capable
 
 
@@ -53,43 +54,45 @@ class PollinationsProvider(BaseAIProvider):
     async def chat(self, messages: List[Dict[str, str]],
                    temperature: float = 0.8, max_tokens: int = 512,
                    model: str = "") -> AIResponse:
-        model = model or CHAT_MODELS[0]
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "private": True,
-        }
-        # Try authenticated endpoint first if key, else free endpoint
+        # Try multiple models in order — free endpoint rate-limits individual
+        # models, so rotating improves availability significantly.
+        models_to_try = [model] if model else CHAT_MODELS
         urls = []
         if self.use_key:
             urls.append(f"{self._base_url}/openai")
         urls.append(f"{self._free_url}/openai")
 
         last_err = ""
-        for url in urls:
-            try:
-                async with httpx.AsyncClient(timeout=45.0) as client:
-                    resp = await client.post(url, json=payload, headers=self._headers())
-                if resp.status_code == 200:
-                    data = resp.json()
-                    text = ""
-                    if isinstance(data, dict):
-                        choices = data.get("choices", [])
-                        if choices:
-                            msg = choices[0].get("message", {})
-                            text = msg.get("content", "") or choices[0].get("text", "")
-                    text = (text or "").strip()
-                    if text:
-                        return self._ok(text, model=model)
-                    last_err = "empty response"
-                else:
-                    last_err = f"HTTP {resp.status_code}: {resp.text[:150]}"
-                    logger.debug(f"Pollinations {url} -> {resp.status_code}")
-            except Exception as e:
-                last_err = str(e)
-                logger.debug(f"Pollinations {url} exception: {e}")
+        for mdl in models_to_try:
+            payload = {
+                "model": mdl,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "private": True,
+            }
+            for url in urls:
+                try:
+                    async with httpx.AsyncClient(timeout=45.0) as client:
+                        resp = await client.post(url, json=payload, headers=self._headers())
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        text = ""
+                        if isinstance(data, dict):
+                            choices = data.get("choices", [])
+                            if choices:
+                                msg = choices[0].get("message", {})
+                                text = msg.get("content", "") or choices[0].get("text", "")
+                        text = (text or "").strip()
+                        if text:
+                            return self._ok(text, model=mdl)
+                        last_err = "empty response"
+                    else:
+                        last_err = f"HTTP {resp.status_code}"
+                        logger.debug(f"Pollinations {url} model={mdl} -> {resp.status_code}")
+                except Exception as e:
+                    last_err = str(e)
+                    logger.debug(f"Pollinations {url} model={mdl} exception: {e}")
 
         return self._fail(last_err or "pollinations failed")
 

@@ -72,6 +72,13 @@ async def handle_channel_post(message: Message):
     await message.bot.send_chat_action(chat.id, ChatAction.TYPING)
     mood = await current_mood_descriptor()
 
+    # React to the channel post (like) — makes Lyuba feel like an engaged subscriber
+    try:
+        from bot.reactions import react_to_channel_post
+        await react_to_channel_post(message.bot, chat.id, message.message_id, post_text)
+    except Exception as e:
+        logger.debug(f"channel reaction failed: {e}")
+
     # Vision if photo
     image_uri = None
     if message.photo:

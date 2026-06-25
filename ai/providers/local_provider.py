@@ -40,6 +40,17 @@ class LocalProvider(BaseAIProvider):
         self._model_loaded = False
         self._lock = asyncio.Lock()
         self._load_attempted = False
+        # ── Anti-segfault generation guard (ported from Asya) ──
+        # llama-cpp's C object is NOT thread-safe: concurrent llama() calls
+        # from different asyncio tasks (e.g. after a wait_for timeout cancels
+        # the holding task but the thread-pool thread keeps running) cause
+        # GGML_ASSERT failures and segmentation faults (exit 139).
+        # The flag + Event ensure only ONE generation runs at a time, and a
+        # cancelled caller waits for the in-flight thread to finish before
+        # returning, so the next generation starts on a quiescent model.
+        self._generating = False
+        self._generation_done = asyncio.Event()
+        self._generation_done.set()  # initially idle
 
     async def initialize(self) -> bool:
         """Try to load the local model. Returns True if loaded."""
@@ -171,13 +182,21 @@ class LocalProvider(BaseAIProvider):
         if not await self.is_available():
             return self._fail("local model not available")
 
+        # Circuit breaker: too many recent errors → skip local for a bit
+        if self._consecutive_errors >= 5:
+            return self._fail("local circuit breaker open (5+ consecutive errors)")
+
+        # ── Wait for any in-flight generation to finish (prevents segfault) ──
+        # A previous caller may have been cancelled by wait_for but its
+        # thread-pool thread is still running llama(). We must NOT start a
+        # new generation until that thread completes.
+        await self._generation_done.wait()
+
         # Trim context to fit budget: keep system + last few turns
         sys_msgs = [m for m in messages if m["role"] == "system"]
         convo = [m for m in messages if m["role"] != "system"]
-        # Keep last 6 turns
         convo = convo[-6:]
         trimmed = sys_msgs + convo
-        # Cap each content length
         for m in trimmed:
             if len(m["content"]) > 1200:
                 m["content"] = m["content"][:1200]
@@ -185,13 +204,47 @@ class LocalProvider(BaseAIProvider):
         prompt = self._format_messages(trimmed)
 
         async with self._lock:
+            # Mark generation as in-flight and clear the "done" event
+            self._generating = True
+            self._generation_done.clear()
             try:
-                # Run blocking llama call in a thread to avoid blocking event loop
-                result = await asyncio.to_thread(self._generate, prompt, temperature, max_tokens)
+                loop = asyncio.get_event_loop()
+                # run_in_executor + shield: even if the caller is cancelled
+                # (e.g. by asyncio.wait_for timeout), the C thread runs to
+                # completion. We then mark "done" so the next caller can start.
+                fut = loop.run_in_executor(
+                    None, self._generate, prompt, temperature, max_tokens
+                )
+                cancelled = False
+                while True:
+                    try:
+                        result = await asyncio.shield(fut)
+                        break
+                    except asyncio.CancelledError:
+                        # Caller cancelled — but we MUST wait for the C thread
+                        # to finish before allowing a new generation, otherwise
+                        # the next llama() call segfaults.
+                        if not cancelled:
+                            cancelled = True
+                            logger.warning(
+                                "Local generation cancelled — waiting for "
+                                "thread to complete safely (preventing segfault)"
+                            )
+                        try:
+                            result = await asyncio.wait_for(asyncio.shield(fut), timeout=60.0)
+                            break
+                        except asyncio.TimeoutError:
+                            # Thread is stuck — give up rather than hang forever
+                            logger.error("Local generation thread stuck >60s after cancel")
+                            return self._fail("generation thread stuck after cancel")
                 return result
             except Exception as e:
                 logger.error(f"Local generation error: {e}")
                 return self._fail(f"generation error: {e}")
+            finally:
+                # ALWAYS release the generation slot, even on error/cancel
+                self._generating = False
+                self._generation_done.set()
 
     def _generate(self, prompt: str, temperature: float, max_tokens: int) -> AIResponse:
         try:

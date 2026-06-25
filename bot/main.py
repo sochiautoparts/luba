@@ -28,6 +28,7 @@ from bot.config import config
 from bot import database as db
 from bot.partners import partner_manager
 from bot.mood import mood_loop, current_mood_descriptor
+from bot import site_content as site_content
 from ai.router import ai_router
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -79,6 +80,14 @@ class LyubaBot:
         except Exception as e:
             logger.warning(f"Partner load failed (non-fatal): {e}")
 
+        # Init site content (products + posts from sochiautoparts.ru)
+        try:
+            await site_content.init_site_content()
+            logger.info(f"Site content: {len(site_content._product_cache)} products, "
+                        f"{len(site_content._post_cache)} posts cached")
+        except Exception as e:
+            logger.warning(f"Site content load failed (non-fatal): {e}")
+
         # Init AI router (loads local model)
         try:
             await ai_router.initialize()
@@ -88,6 +97,7 @@ class LyubaBot:
         # Background tasks
         asyncio.create_task(mood_loop(), name="mood_loop")
         asyncio.create_task(db.run_periodic_cleanup(), name="cleanup_loop")
+        asyncio.create_task(self._site_refresh_loop(), name="site_refresh")
 
         # Notify owner that bot is alive
         await self._notify_owner()
@@ -116,11 +126,24 @@ class LyubaBot:
                 f"я на связи 😊 сейчас я {mood}. "
                 f"локальная модель: {'✅ загружена' if ai_router._local._model_loaded else '❌ недоступна (работаю на облаке)'}, "
                 f"опциональные провайдеры: {config.optional_providers() or 'нет'}. "
-                f"партнёров: {len(partner_manager.campaigns)}. "
+                f"партнёров: {len(partner_manager.campaigns)}, "
+                f"товаров сайта: {len(site_content._product_cache)}, "
+                f"постов: {len(site_content._post_cache)}. "
                 f"пиши мне в личку или добавь в группу — буду общаться 💬"
             )
         except Exception as e:
             logger.warning(f"Could not notify owner: {e}")
+
+    async def _site_refresh_loop(self) -> None:
+        """Periodically refresh site products + posts (every hour)."""
+        import asyncio as _a
+        while True:
+            await _a.sleep(3600)
+            try:
+                await site_content.refresh_products(force=True)
+                await site_content.refresh_posts(force=True)
+            except Exception as e:
+                logger.debug(f"site refresh error: {e}")
 
 
 async def main():

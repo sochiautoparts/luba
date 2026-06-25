@@ -160,6 +160,28 @@ async def _process_private(message: Message, text: str):
     mood = await current_mood_descriptor()
     extra_ctx = build_private_context(message)
 
+    # Channel + site recommendations context
+    extra_ctx += (
+        "\n\nРЕКОМЕНДАЦИИ (только если к месту, ~1 из 8 сообщений):\n"
+        "- Каналы: https://t.me/sochiautoparts (авто-новости), https://t.me/bmw_mpower_club (BMW клуб)\n"
+        "- Магазин: https://sochiautoparts.ru/shop | Статьи: https://sochiautoparts.ru"
+    )
+
+    # Occasionally include a real product / post from the site
+    try:
+        if random.random() < 0.25:
+            from bot import site_content as sc
+            prod = await sc.relevant_product(text)
+            if prod:
+                extra_ctx += "\n\nСЛУЧАЙНЫЙ ТОВАР ИЗ МАГАЗИНА (упомяни если к месту):\n" + sc.format_product_for_context(prod)
+        if random.random() < 0.12:
+            from bot import site_content as sc
+            post = await sc.random_post()
+            if post:
+                extra_ctx += "\n\nСВЕЖИЙ ПОСТ НА САЙТЕ: " + sc.format_post_for_context(post)
+    except Exception as e:
+        logger.debug(f"site content error: {e}")
+
     # Collect partner links relevant to the message
     partner_links = []
     try:
