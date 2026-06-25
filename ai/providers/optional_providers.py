@@ -6,6 +6,7 @@ bot runs on Local + Pollinations-free. Adding any key below immediately
 upgrades routing to include that provider.
 
 Providers:
+  - GitHub Models (gpt-4o, gpt-4o-mini, Llama-3.1-405B/8B) — FREE, needs PAT with 'models' scope
   - Groq        (free tier, very fast, Llama 3.3 70B / Llama 3.1 8B)  — OpenAI-compatible
   - OpenRouter  (free models: Llama, Mistral, Gemini-flash, Qwen)     — OpenAI-compatible
   - Gemini      (Google Generative AI free tier)                       — Google REST
@@ -24,6 +25,70 @@ from ai.providers.base import BaseAIProvider, AIResponse
 from bot.config import config
 
 logger = logging.getLogger("luba.ai.optional")
+
+
+# ── GitHub Models (free AI catalog by GitHub) ─────────────────────────────────
+
+class GitHubModelsProvider(BaseAIProvider):
+    """GitHub Models — free AI catalog accessible with a GitHub PAT.
+
+    Available models (verified June 2025):
+      - gpt-4o               (Azure OpenAI, top quality)
+      - gpt-4o-mini          (Azure OpenAI, fast + cheap)
+      - Meta-Llama-3.1-405B-Instruct  (Meta, huge open model)
+      - Meta-Llama-3.1-8B-Instruct    (Meta, fast)
+
+    Auth: a GitHub Personal Access Token with 'models' scope (classic PAT).
+    Set GITHUB_MODELS_TOKEN secret in the repo to enable.
+
+    Free tier with rate limits (per-user, not per-repo):
+      - ~150 requests/day for gpt-4o
+      - ~3000 requests/day for gpt-4o-mini
+      - Higher limits for Llama models
+    """
+    name = "github-models"
+    base_url = "https://models.inference.ai.azure.com"
+    default_model = "gpt-4o-mini"
+
+    def __init__(self):
+        super().__init__()
+        self._api_key = config.GITHUB_MODELS_TOKEN
+
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+        }
+
+    async def chat(self, messages: List[Dict[str, str]],
+                   temperature: float = 0.8, max_tokens: int = 512,
+                   model: str = "") -> AIResponse:
+        # GitHub Models uses OpenAI-compatible /chat/completions
+        payload = {
+            "model": model or self.default_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        url = f"{self.base_url}/chat/completions"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=payload, headers=self._headers())
+            if resp.status_code == 200:
+                data = resp.json()
+                choices = data.get("choices", [])
+                text = choices[0]["message"]["content"] if choices else ""
+                text = (text or "").strip()
+                if text:
+                    return self._ok(text, model=payload["model"])
+                return self._fail("empty response")
+            elif resp.status_code == 401:
+                return self._fail("GitHub Models 401 — token needs 'models' scope")
+            elif resp.status_code == 429:
+                return self._fail("GitHub Models 429 — rate limit hit")
+            return self._fail(f"HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            return self._fail(str(e))
 
 
 # ── OpenAI-compatible base (Groq, OpenRouter) ─────────────────────────────────
@@ -306,8 +371,15 @@ class HuggingFaceProvider(BaseAIProvider):
 # ── Factory ───────────────────────────────────────────────────────────────────
 
 def build_optional_providers() -> List[BaseAIProvider]:
-    """Instantiate all optional providers whose credentials are configured."""
+    """Instantiate all optional providers whose credentials are configured.
+
+    Order = priority: GitHub Models first (gpt-4o-mini, best free quality),
+    then Groq (fastest), then the rest.
+    """
     providers: List[BaseAIProvider] = []
+    if config.GITHUB_MODELS_TOKEN:
+        providers.append(GitHubModelsProvider())
+        logger.info("Optional provider enabled: GitHub Models (gpt-4o-mini)")
     if config.GROQ_API_KEY:
         providers.append(GroqProvider())
         logger.info("Optional provider enabled: Groq")

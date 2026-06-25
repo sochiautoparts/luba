@@ -48,6 +48,9 @@ class BotConfig:
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+    # GitHub Models — free AI catalog (gpt-4o, gpt-4o-mini, Llama-3.1-405B/8B)
+    # Needs a classic PAT with 'models' scope (separate from GH_PAT_TOKEN)
+    GITHUB_MODELS_TOKEN: str = os.getenv("GITHUB_MODELS_TOKEN", "")
     CF_ACCOUNT_ID_1: str = os.getenv("CF_ACCOUNT_ID_1", "")
     CF_API_TOKEN_1: str = os.getenv("CF_API_TOKEN_1", "")
     CF_ACCOUNT_ID_2: str = os.getenv("CF_ACCOUNT_ID_2", "")
@@ -66,12 +69,12 @@ class BotConfig:
     PARTNER_REFRESH_HOURS: int = int(os.getenv("PARTNER_REFRESH_HOURS", "6"))
 
     # ── Group activity tuning ──
-    # Proactive probability: kept moderate to avoid Telegram flood control
-    # (Telegram limits ~20 msg/min to a single group). Lyuba still ALWAYS
-    # responds to direct mentions/replies — this only controls unsolicited
-    # proactive comments on random messages.
-    GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.18"))
-    GROUP_MIN_INTERVAL: int = int(os.getenv("GROUP_MIN_INTERVAL", "20"))
+    # Proactive probability: kept LOW to avoid Telegram flood control
+    # (Telegram limits ~20 msg/min to a single group, and RetryAfter bans
+    # for 5-12s when exceeded). Lyuba still ALWAYS responds to direct
+    # mentions/replies — this only controls unsolicited proactive comments.
+    GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.12"))
+    GROUP_MIN_INTERVAL: int = int(os.getenv("GROUP_MIN_INTERVAL", "25"))
     GROUP_MEMORY_SIZE: int = int(os.getenv("GROUP_MEMORY_SIZE", "30"))
     # Max messages Lyuba sends per minute in a single group (flood safety)
     GROUP_MAX_PER_MINUTE: int = int(os.getenv("GROUP_MAX_PER_MINUTE", "3"))
@@ -114,6 +117,8 @@ class BotConfig:
     def optional_providers(self) -> List[str]:
         """Return list of optional providers that have credentials configured."""
         avail = []
+        if self.GITHUB_MODELS_TOKEN:
+            avail.append("github-models")
         if self.GROQ_API_KEY:
             avail.append("groq")
         if self.GEMINI_API_KEY:
