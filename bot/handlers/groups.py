@@ -103,6 +103,7 @@ async def _should_respond(message: Message) -> bool:
         return True
 
     # Channel-forwarded posts in discussion groups — high proactive chance
+    # (directed check already done above, so this is only for non-directed)
     if message.sender_chat and message.sender_chat.type == "channel":
         return random.random() < config.GROUP_PROACTIVE_PROB
 
@@ -216,9 +217,13 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
 async def handle_group_photo(message: Message):
     """Handle photos in groups.
 
-    Photos get a REACTION (like) always (if not politics).
-    Text response ONLY when directed at Lyuba (mention/reply) — not on every
-    photo. This avoids spammy responses to every image in the chat.
+    Lyuba reacts to photos and responds when directed at her.
+    - Directed (mention/reply to Lyuba): ALWAYS responds, even for album photos
+      and even without caption.
+    - Non-directed: sets a reaction with moderate probability (25%), no text.
+    - Albums: only process the FIRST photo (skip subsequent ones with same
+      media_group_id) to avoid duplicate responses — BUT still respond if
+      that first photo is directed at Lyuba.
     """
     if message.chat.type not in ("group", "supergroup"):
         return
@@ -232,35 +237,58 @@ async def handle_group_photo(message: Message):
     if _is_politics_or_war(caption):
         return
 
-    # Skip albums (media groups) entirely — don't react to every photo in a batch
-    if message.media_group_id:
-        return
-
-    # React to photos with moderate probability, only if there's a caption.
-    # Reactions don't count toward message flood limits, so we can be more generous.
-    # Photos without captions get no reaction (nothing to react to semantically).
-    if caption and random.random() < 0.25:
-        try:
-            from bot.reactions import maybe_react
-            asyncio.create_task(maybe_react(
-                message.bot, message.chat.id, message.message_id, caption,
-                prob=1.0,  # already rolled above
-            ))
-        except Exception:
-            pass
-
-    # Text response ONLY when directed at Lyuba (mention/reply to her).
-    # Non-directed photos get NO text response (avoids spam).
-    # But if DIRECTED, ALWAYS respond — even without caption (use generic prompt).
     directed = is_directed_at_lyuba(message)
-    if not directed:
-        return  # photo without mention → just reaction, no text
 
-    # Directed photo: respond. Use caption if available, else generic prompt.
+    # Albums: Telegram sends each photo separately with same media_group_id.
+    # To avoid duplicate responses, track which albums we've already handled.
+    # BUT if directed at Lyuba, always respond (even in album).
+    if message.media_group_id:
+        if not directed:
+            # Non-directed album photo — just set a reaction, no text
+            if caption and random.random() < 0.15:
+                try:
+                    from bot.reactions import maybe_react
+                    asyncio.create_task(maybe_react(
+                        message.bot, message.chat.id, message.message_id, caption, prob=1.0))
+                except Exception:
+                    pass
+            return
+        # Directed album photo — respond to this one (skip subsequent photos in same album)
+        # Use a simple in-memory set to track handled albums per chat
+        if not hasattr(handle_group_photo, '_seen_albums'):
+            handle_group_photo._seen_albums = {}
+        album_key = f"{message.chat.id}:{message.media_group_id}"
+        now = time.time()
+        # Clean old entries (>5 min)
+        handle_group_photo._seen_albums = {k: v for k, v in handle_group_photo._seen_albums.items() if now - v < 300}
+        if album_key in handle_group_photo._seen_albums:
+            return  # already responded to this album
+        handle_group_photo._seen_albums[album_key] = now
+
+    # Non-directed single photo: set reaction with moderate probability, no text
+    if not directed:
+        if caption and random.random() < 0.25:
+            try:
+                from bot.reactions import maybe_react
+                asyncio.create_task(maybe_react(
+                    message.bot, message.chat.id, message.message_id, caption, prob=1.0))
+            except Exception:
+                pass
+        # Also react to photos without caption sometimes (visual engagement)
+        elif not caption and random.random() < 0.10:
+            try:
+                from bot.reactions import maybe_react
+                asyncio.create_task(maybe_react(
+                    message.bot, message.chat.id, message.message_id, "", prob=1.0))
+            except Exception:
+                pass
+        return  # no text response for non-directed photos
+
+    # Directed photo: ALWAYS respond — even without caption.
     if caption:
         photo_prompt = caption
     else:
-        photo_prompt = "(тебе прислали фото без подписи — коротко отреагируй, предположи что там может быть)"
+        photo_prompt = "(тебе прислали фото — коротко отреагируй живо, предположи что там может быть по контексту)"
 
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     try:

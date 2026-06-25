@@ -54,7 +54,7 @@ class _OpenAICompatProvider(BaseAIProvider):
             "max_tokens": max_tokens,
         }
         try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(f"{self.base_url}/chat/completions",
                                          json=payload, headers=self._headers())
             if resp.status_code == 200:
@@ -96,7 +96,7 @@ class GroqProvider(_OpenAICompatProvider):
         payload = {"model": self.VISION_MODEL, "messages": messages,
                    "max_tokens": 600, "temperature": 0.6}
         try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(f"{self.base_url}/chat/completions",
                                          json=payload, headers=self._headers())
             if resp.status_code == 200:
@@ -164,7 +164,7 @@ class GeminiProvider(BaseAIProvider):
         url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                f"{model or self.MODEL}:generateContent?key={self._api_key}")
         try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(url, json=payload,
                                          headers={"Content-Type": "application/json"})
             if resp.status_code == 200:
@@ -201,7 +201,7 @@ class GeminiProvider(BaseAIProvider):
         url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                f"{self.MODEL}:generateContent?key={self._api_key}")
         try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(url, json=payload,
                                          headers={"Content-Type": "application/json"})
             if resp.status_code == 200:
@@ -242,7 +242,7 @@ class CloudflareProvider(BaseAIProvider):
                f"{self._account_id}/ai/run/{model or self.MODEL}")
         payload = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens}
         try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(url, json=payload,
                                          headers={"Authorization": f"Bearer {self._api_token}"})
             if resp.status_code == 200:
@@ -288,7 +288,7 @@ class HuggingFaceProvider(BaseAIProvider):
             "max_tokens": max_tokens,
         }
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(url, json=payload,
                                          headers={"Authorization": f"Bearer {self._api_key}"})
             if resp.status_code == 200:

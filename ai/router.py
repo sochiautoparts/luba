@@ -314,12 +314,12 @@ class AIRouter:
         if cloud_providers:
             tasks = [asyncio.create_task(self._safe_call(p, messages, temp, max_tokens))
                      for p in cloud_providers]
-            deadline = asyncio.get_event_loop().time() + 40.0
+            deadline = asyncio.get_running_loop().time() + 40.0
             done = set()
             pending = set(tasks)
             best = None
             while pending:
-                remaining = deadline - asyncio.get_event_loop().time()
+                remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     break
                 try:

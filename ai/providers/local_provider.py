@@ -208,7 +208,7 @@ class LocalProvider(BaseAIProvider):
             self._generating = True
             self._generation_done.clear()
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 # run_in_executor + shield: even if the caller is cancelled
                 # (e.g. by asyncio.wait_for timeout), the C thread runs to
                 # completion. We then mark "done" so the next caller can start.
