@@ -219,12 +219,11 @@ jobs:
           DB_PATH: luba.db
           ADMITAD_ADS_FILE: data/partners.json
           PARTNERS_URL: "https://sochiautoparts.ru/partners.json"
-          # Group activity — tuned for Telegram flood control safety
-          # (Telegram limits ~20 msg/min per group; RetryAfter bans 5-12s on overflow)
-          # Direct mentions/replies are ALWAYS answered (not affected by proactive prob).
-          GROUP_PROACTIVE_PROB: "0.12"
-          GROUP_MIN_INTERVAL: "25"
-          GROUP_MAX_PER_MINUTE: "5"
+          # Group activity — ACTIVE in groups, within Telegram limits (~20 msg/min/group)
+          # safe_send handles RetryAfter (waits + retries). Directed mentions ALWAYS answered.
+          GROUP_PROACTIVE_PROB: "0.35"
+          GROUP_MIN_INTERVAL: "10"
+          GROUP_MAX_PER_MINUTE: "15"
           GROUP_MEMORY_SIZE: "30"
           LOG_LEVEL: INFO
         run: |

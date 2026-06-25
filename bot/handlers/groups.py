@@ -234,10 +234,10 @@ async def handle_group_photo(message: Message):
     if message.media_group_id:
         return
 
-    # React to photos with LOW probability, only if there's a caption.
-    # This prevents the bot from reacting to every single image in the chat
-    # (which felt spammy). Photos without captions get no reaction at all.
-    if caption and random.random() < 0.10:
+    # React to photos with moderate probability, only if there's a caption.
+    # Reactions don't count toward message flood limits, so we can be more generous.
+    # Photos without captions get no reaction (nothing to react to semantically).
+    if caption and random.random() < 0.25:
         try:
             from bot.reactions import maybe_react
             asyncio.create_task(maybe_react(

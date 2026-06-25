@@ -69,18 +69,20 @@ class BotConfig:
     PARTNER_REFRESH_HOURS: int = int(os.getenv("PARTNER_REFRESH_HOURS", "6"))
 
     # ── Group activity tuning ──
-    # Proactive probability: kept LOW to avoid Telegram flood control
-    # (Telegram limits ~20 msg/min to a single group, and RetryAfter bans
-    # for 5-12s when exceeded). Lyuba still ALWAYS responds to direct
-    # mentions/replies — this only controls unsolicited proactive comments.
-    GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.12"))
-    GROUP_MIN_INTERVAL: int = int(os.getenv("GROUP_MIN_INTERVAL", "25"))
+    # Lyuba is ACTIVE in groups: responds to direct mentions/replies ALWAYS,
+    # and proactively comments on a good portion of other messages.
+    # Telegram's hard limit is ~20 msg/min per group; safe_send handles
+    # RetryAfter gracefully (waits + retries) so we can be active.
+    # GROUP_MAX_PER_MINUTE is set just under the limit (15) to avoid bans,
+    # and directed messages use a higher cap (priority) so they're never dropped.
+    GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.35"))
+    GROUP_MIN_INTERVAL: int = int(os.getenv("GROUP_MIN_INTERVAL", "10"))
     GROUP_MEMORY_SIZE: int = int(os.getenv("GROUP_MEMORY_SIZE", "30"))
     # Max messages Lyuba sends per minute in a single group (flood safety).
-    # Telegram's hard limit is ~20 msg/min/group. Directed messages (mentions/
-    # replies) use 3x this cap via safe_send(priority=True) so they're never
-    # silently dropped. Proactive comments use this base cap.
-    GROUP_MAX_PER_MINUTE: int = int(os.getenv("GROUP_MAX_PER_MINUTE", "5"))
+    # Telegram's hard limit is ~20 msg/min/group. We use 15 as the proactive
+    # cap (safe margin). Directed messages (mentions/replies) use 3x via
+    # safe_send(priority=True) = 18, so they're almost never dropped.
+    GROUP_MAX_PER_MINUTE: int = int(os.getenv("GROUP_MAX_PER_MINUTE", "15"))
 
     # ── Web verification ──
     SEARCH_TIMEOUT_SECONDS: int = int(os.getenv("SEARCH_TIMEOUT_SECONDS", "6"))
@@ -96,9 +98,10 @@ class BotConfig:
 
     # ── Reactions (likes) ──
     # Probability Lyuba sets a reaction on a group message she reads (not replies to)
-    REACTION_PROB: float = float(os.getenv("REACTION_PROB", "0.25"))
+    # Reactions don't count toward message flood limits, so we can be generous.
+    REACTION_PROB: float = float(os.getenv("REACTION_PROB", "0.45"))
     # Probability Lyuba reacts to a channel post
-    CHANNEL_REACTION_PROB: float = float(os.getenv("CHANNEL_REACTION_PROB", "0.5"))
+    CHANNEL_REACTION_PROB: float = float(os.getenv("CHANNEL_REACTION_PROB", "0.6"))
 
     # ── AI tuning ──
     CHAT_TEMPERATURE: float = 0.85
