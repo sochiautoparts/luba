@@ -212,6 +212,12 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
 
 @group_router.message(F.photo)
 async def handle_group_photo(message: Message):
+    """Handle photos in groups.
+
+    Photos get a REACTION (like) always (if not politics).
+    Text response ONLY when directed at Lyuba (mention/reply) — not on every
+    photo. This avoids spammy responses to every image in the chat.
+    """
     if message.chat.type not in ("group", "supergroup"):
         return
     if message.from_user is None:
@@ -223,26 +229,39 @@ async def handle_group_photo(message: Message):
 
     if _is_politics_or_war(caption):
         return
-    if not await _should_respond(message):
+
+    # ALWAYS set a reaction on photos (feels alive, no text spam)
+    try:
+        from bot.reactions import maybe_react
+        asyncio.create_task(maybe_react(message.bot, message.chat.id, message.message_id, caption or "",
+                                        prob=0.4))
+    except Exception:
+        pass
+
+    # Text response ONLY when directed at Lyuba (mention/reply to her)
+    directed = is_directed_at_lyuba(message)
+    if not directed:
+        return  # photo without mention → just reaction, no text
+
+    # Skip albums (media groups) — only respond to the first photo
+    if message.media_group_id:
         return
 
-    directed = is_directed_at_lyuba(message)
-    # Vision disabled in groups — don't download the photo (saves bandwidth +
-    # CPU). Lyuba reacts to the caption text only.
-    # If no caption, use a placeholder so the model knows it's a photo.
+    # Directed photo: respond based on caption text (vision disabled in groups)
     photo_note = ""
     if not caption:
-        photo_note = "(прислали фото без подписи — прокомментируй коротко, предположи что там может быть по контексту чата)"
+        photo_note = "(тебе прислали фото без подписи — коротко отреагируй)"
+    else:
+        photo_note = caption
 
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     try:
-        out = await _generate_group_response(message, caption or photo_note, directed)
+        out = await _generate_group_response(message, photo_note, directed)
     except Exception as e:
         logger.error(f"group photo response error: {e}")
         return
     if not out:
         return
-    # ALWAYS reply (thread) — same as text handler
     try:
         from bot.safe_send import safe_reply
         await safe_reply(message.bot, message, out, always_reply=True)

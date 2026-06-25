@@ -194,7 +194,7 @@ jobs:
           # Optional free cloud providers (auto-enabled if key present)
           # GitHub Models — free AI catalog (gpt-4o, gpt-4o-mini, Llama-3.1-405B)
           # Needs a classic PAT with 'models' scope
-          GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN }}
+          GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -206,12 +206,13 @@ jobs:
           # GitHub PAT for self-dispatch
           GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
           GH_REPO: sochiautoparts/luba
-          # Local model
+          # Local model — GitHub Actions ubuntu-latest has 4 vCPUs
+          # Using 3 threads leaves 1 for asyncio/event loop (prevents starvation)
           ENABLE_LOCAL_MODEL: ${{ env.ENABLE_LOCAL_MODEL || 'true' }}
           MODEL_PATH: "models/RuadaptQwen3-4B-Instruct-Q4_K_M.gguf"
           MODEL_N_CTX: "8192"
           MODEL_N_THREADS: "3"
-          MODEL_MAX_TOKENS: "1024"
+          MODEL_MAX_TOKENS: "768"
           MODEL_AUTO_DOWNLOAD: "true"
           MODEL_DOWNLOAD_URL: "https://huggingface.co/RefalMachine/RuadaptQwen3-4B-Instruct-GGUF/resolve/main/Q4_K_M.gguf"
           # Database

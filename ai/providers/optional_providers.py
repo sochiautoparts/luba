@@ -39,7 +39,7 @@ class GitHubModelsProvider(BaseAIProvider):
       - Meta-Llama-3.1-8B-Instruct    (Meta, fast)
 
     Auth: a GitHub Personal Access Token with 'models' scope (classic PAT).
-    Set GITHUB_MODELS_TOKEN secret in the repo to enable.
+    Set GH_MODELS_TOKEN secret in the repo to enable.
 
     Free tier with rate limits (per-user, not per-repo):
       - ~150 requests/day for gpt-4o
@@ -52,7 +52,7 @@ class GitHubModelsProvider(BaseAIProvider):
 
     def __init__(self):
         super().__init__()
-        self._api_key = config.GITHUB_MODELS_TOKEN
+        self._api_key = config.GH_MODELS_TOKEN
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -377,7 +377,7 @@ def build_optional_providers() -> List[BaseAIProvider]:
     then Groq (fastest), then the rest.
     """
     providers: List[BaseAIProvider] = []
-    if config.GITHUB_MODELS_TOKEN:
+    if config.GH_MODELS_TOKEN:
         providers.append(GitHubModelsProvider())
         logger.info("Optional provider enabled: GitHub Models (gpt-4o-mini)")
     if config.GROQ_API_KEY:

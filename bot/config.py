@@ -50,7 +50,7 @@ class BotConfig:
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
     # GitHub Models — free AI catalog (gpt-4o, gpt-4o-mini, Llama-3.1-405B/8B)
     # Needs a classic PAT with 'models' scope (separate from GH_PAT_TOKEN)
-    GITHUB_MODELS_TOKEN: str = os.getenv("GITHUB_MODELS_TOKEN", "")
+    GH_MODELS_TOKEN: str = os.getenv("GH_MODELS_TOKEN", "")
     CF_ACCOUNT_ID_1: str = os.getenv("CF_ACCOUNT_ID_1", "")
     CF_API_TOKEN_1: str = os.getenv("CF_API_TOKEN_1", "")
     CF_ACCOUNT_ID_2: str = os.getenv("CF_ACCOUNT_ID_2", "")
@@ -117,7 +117,7 @@ class BotConfig:
     def optional_providers(self) -> List[str]:
         """Return list of optional providers that have credentials configured."""
         avail = []
-        if self.GITHUB_MODELS_TOKEN:
+        if self.GH_MODELS_TOKEN:
             avail.append("github-models")
         if self.GROQ_API_KEY:
             avail.append("groq")

@@ -1,13 +1,14 @@
 """
-Channel handler for Lyuba — comments on channel posts where she's an admin.
+Channel handler for Lyuba — ONLY sets reactions on channel posts.
 
-When Lyuba is added as an admin (with post/comment rights) to a channel,
-she receives channel_post updates. With some probability she writes a short
-comment (reply) under the post — based on the post TEXT (vision disabled for
-resource efficiency). She also sets emoji reactions (likes) on posts.
+Per user requirement: when Lyuba is added to a channel, she should ONLY put
+emoji reactions (likes) on posts, NOT write comments directly in the channel.
+This keeps channels clean — the bot is a silent engaged subscriber that
+reacts but doesn't flood with comments.
 
-Unlike Asya, Lyuba does NOT manage/publish to channels — she only comments
-and reacts as an active subscriber.
+Reactions use Telegram setMessageReaction (👍❤️🔥😄😮🙏 etc.).
+The bot must be added as a channel admin (with at least basic rights) for
+reactions to work on posts.
 """
 
 import asyncio
@@ -17,22 +18,17 @@ import time
 
 from aiogram import Router, F, types
 from aiogram.types import Message, Chat
-from aiogram.enums import ChatAction
 
-from bot.config import config, persona
+from bot.config import config
 from bot import database as db
-from bot.context import build_channel_context
-from bot.mood import current_mood_descriptor
-from ai.router import ai_router
 
 logger = logging.getLogger("luba.channels")
 
 channel_router = Router()
 
-# Probability Lyuba comments on a given channel post
-CHANNEL_COMMENT_PROB = 0.4
-# Min seconds between comments on the same channel
-CHANNEL_MIN_INTERVAL = 60
+# Probability Lyuba reacts to a channel post (0.0-1.0)
+# Higher = more active, but keep reasonable to avoid looking spammy.
+CHANNEL_REACTION_PROB = 0.65
 
 
 def _is_politics_or_war(text: str) -> bool:
@@ -42,8 +38,13 @@ def _is_politics_or_war(text: str) -> bool:
     return any(w in t for w in triggers)
 
 
-@channel_router.channel_post(F.text | F.photo)
+@channel_router.channel_post(F.text | F.photo | F.video | F.animation)
 async def handle_channel_post(message: Message):
+    """React to channel posts with emoji — NO comments, NO replies.
+
+    Lyuba is a silent engaged subscriber in channels: she only puts likes
+    (reactions), never writes comments. This keeps the channel clean.
+    """
     chat: Chat = message.chat
     await db.upsert_channel(chat.id, username=chat.username or "", title=chat.title or "")
 
@@ -51,79 +52,23 @@ async def handle_channel_post(message: Message):
     if not await db.is_channel_enabled(chat.id):
         return
 
-    # Min interval between comments on the same channel
-    last = await db.get_channel_last_commented(chat.id)
-    if (time.time() - last) < CHANNEL_MIN_INTERVAL:
-        return
-
-    # Probabilistic comment
-    if random.random() > CHANNEL_COMMENT_PROB:
+    # Probabilistic reaction (don't react to EVERY post — feels more natural)
+    if random.random() > CHANNEL_REACTION_PROB:
         return
 
     post_text = (message.caption or message.text or "").strip()
     if _is_politics_or_war(post_text):
-        return
+        return  # skip politics/war posts entirely
 
-    # Skip albums (media groups) to avoid commenting on every photo
-    if message.media_group_id:
-        return
-
-    await message.bot.send_chat_action(chat.id, ChatAction.TYPING)
-    mood = await current_mood_descriptor()
-
-    # React to the channel post (like) — makes Lyuba feel like an engaged subscriber
+    # React to the channel post (like) — this is the ONLY action in channels
     try:
-        from bot.reactions import react_to_channel_post
-        await react_to_channel_post(message.bot, chat.id, message.message_id, post_text)
+        from bot.reactions import maybe_react
+        await maybe_react(
+            message.bot, chat.id, message.message_id, post_text,
+            prob=1.0,  # we already checked probability above
+        )
     except Exception as e:
         logger.debug(f"channel reaction failed: {e}")
 
-    # Vision DISABLED for channel posts too (resource saving, same as groups).
-    # Lyuba comments based on the post TEXT only. If a post is photo-only with
-    # no caption, she makes a light generic comment or skips.
-
-    extra_ctx = build_channel_context(chat, post_text, message.from_user)
-    # Add channel + site recommendation context
-    extra_ctx += (
-        "\n\nРЕКОМЕНДАЦИИ (только если к месту):\n"
-        "- Каналы: https://t.me/sochiautoparts, https://t.me/bmw_mpower_club\n"
-        "- Магазин: https://sochiautoparts.ru/shop | Статьи: https://sochiautoparts.ru"
-    )
-    # Occasionally include a real product/post from the site
-    try:
-        if random.random() < 0.25:
-            from bot import site_content as sc
-            prod = await sc.random_product()
-            if prod:
-                extra_ctx += "\n\nТОВАР ИЗ МАГАЗИНА (упомяни если к месту): " + sc.format_product_for_context(prod)
-    except Exception:
-        pass
-
-    try:
-        resp = await asyncio.wait_for(
-            ai_router.comment(
-                prompt="Напиши короткий живой комментарий к этому посту канала.",
-                extra_context=extra_ctx,
-                mood=mood,
-                route_type="comment",
-            ),
-            timeout=40.0,
-        )
-    except asyncio.TimeoutError:
-        return
-
-    if not resp.ok or not resp.text:
-        return
-
-    text = resp.text.strip()
-    if not text:
-        return
-    # Reply (comment) under the channel post — use safe_send for RetryAfter handling.
-    # In channels, message.reply threads the comment under the post.
-    try:
-        from bot.safe_send import safe_send
-        sent = await safe_send(message.bot, chat.id, text, reply_to_message_id=message.message_id)
-        if sent:
-            await db.touch_channel_comment(chat.id)
-    except Exception as e:
-        logger.debug(f"channel comment reply failed: {e}")
+    # NO comment reply — channels are reaction-only per design.
+    # (Comments happen in the linked discussion group, not the channel itself.)

@@ -52,7 +52,7 @@ async def _check_user(message: Message) -> bool:
     return True
 
 
-@chat_router.message(CommandStart())
+@chat_router.message(CommandStart(), F.chat.type == "private")
 async def cmd_start(message: Message):
     if not await _check_user(message):
         return
@@ -61,7 +61,7 @@ async def cmd_start(message: Message):
     await message.answer(greeting)
 
 
-@chat_router.message(Command("help"))
+@chat_router.message(Command("help"), F.chat.type == "private")
 async def cmd_help(message: Message):
     if not await _check_user(message):
         return
@@ -74,7 +74,7 @@ async def cmd_help(message: Message):
     )
 
 
-@chat_router.message(Command("clear"))
+@chat_router.message(Command("clear"), F.chat.type == "private")
 async def cmd_clear(message: Message):
     if not await _check_user(message):
         return
@@ -82,7 +82,7 @@ async def cmd_clear(message: Message):
     await message.answer("всё, чистый лист 🙈 о чём поговорим?")
 
 
-@chat_router.message(Command("mood"))
+@chat_router.message(Command("mood"), F.chat.type == "private")
 async def cmd_mood(message: Message):
     if not await _check_user(message):
         return
@@ -91,7 +91,7 @@ async def cmd_mood(message: Message):
     await message.answer(f"сейчас я {mood}. энергии примерно {int(m.get('energy',0.5)*100)}% ☕")
 
 
-@chat_router.message(F.photo)
+@chat_router.message(F.photo, F.chat.type == "private")
 async def handle_photo(message: Message):
     if not await _check_user(message):
         return
@@ -132,7 +132,7 @@ async def handle_photo(message: Message):
         await message.answer("блин, не смогла разглядеть фото 🙈 попробуй ещё разок?")
 
 
-@chat_router.message(F.text)
+@chat_router.message(F.text, F.chat.type == "private")
 async def handle_text(message: Message):
     if not await _check_user(message):
         return
