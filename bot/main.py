@@ -130,10 +130,35 @@ class LyubaBot:
         allowed = ["message", "edited_message", "channel_post", "edited_channel_post"]
 
         logger.info("=== Люба в сети — слушаю сообщения ===")
+        # Robust polling wrapper: aiogram's start_polling already retries on
+        # transient network errors (Connection reset by peer, timeouts), but
+        # as a safety net we wrap it in an outer loop so the bot NEVER exits
+        # due to a polling failure. The workflow's `set +e` + restart loop
+        # is the last line of defense.
+        polling_retries = 0
+        while True:
+            try:
+                await self.dp.start_polling(self.bot, allowed_updates=allowed)
+                # If start_polling returns normally (e.g. stop_polling called), exit
+                break
+            except Exception as e:
+                polling_retries += 1
+                # Network errors are transient (Connection reset by peer, DNS hiccup,
+                # Telegram API temporary unavailable). aiogram handles most internally,
+                # but if it bubbles up, we retry with backoff.
+                logger.error(f"Polling error (attempt {polling_retries}): {type(e).__name__}: {e}")
+                if polling_retries > 50:
+                    logger.error("Too many polling retries (50+) — exiting to let workflow restart")
+                    break
+                # Backoff: 5s for first few, 10s after that
+                wait = 5 if polling_retries <= 5 else 10
+                logger.warning(f"Retrying polling in {wait}s...")
+                await asyncio.sleep(wait)
+        # Cleanup
         try:
-            await self.dp.start_polling(self.bot, allowed_updates=allowed)
-        finally:
             await ai_router.close()
+        except Exception:
+            pass
 
     async def _notify_owner(self) -> None:
         """Send a startup greeting to the owner so they know Lyuba is alive."""
