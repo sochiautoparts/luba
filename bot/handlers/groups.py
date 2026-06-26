@@ -72,13 +72,12 @@ async def _log_group_message(message: Message, content: str = "", is_media: bool
                               media_caption: str = "", is_bot: bool = False):
     """Log a group message to the DB for context.
 
-    is_bot: True if this is Lyuba's own message (she's logging her reply).
-    For incoming messages, is_bot is determined by checking message.from_user.id.
+    is_bot: True if this is Lyuba's own message OR any bot's message.
+    For incoming messages, is_bot is auto-detected from from_user.
     """
     u = message.from_user
-    # If not explicitly marked as bot (Lyuba's own reply), check if the
-    # message author IS Lyuba (avoids mislabeling her messages as non-bot)
-    if not is_bot and u and u.id == config.BOT_ID:
+    # Auto-detect: mark as bot if author is Lyuba OR any bot
+    if not is_bot and u and (u.id == config.BOT_ID or u.is_bot):
         is_bot = True
     await db.add_group_message(
         chat_id=message.chat.id,
@@ -97,19 +96,16 @@ async def _should_respond(message: Message) -> bool:
 
     Lyuba is VERY ACTIVE: responds to direct mentions/replies ALWAYS,
     and proactively comments on most other messages (high probability).
-    Only skips: other bots (avoid loops), own messages, politics/war.
+    Only skips: OWN messages (anti-self-reply), politics/war.
 
-    CRITICAL ANTI-SELF-REPLY: Never respond to own messages. This is the
-    primary prevention against Lyuba replying to herself.
+    ANTI-SELF-REPLY (critical): Never respond to own messages (by user_id).
+    Other bots ARE allowed — Lyuba can chat with them if they @mention her
+    or reply to her. This makes groups more lively.
     """
     u = message.from_user
-    # CRITICAL: Skip own messages — by user_id match.
-    # This prevents self-reply loops (Lyuba seeing her own messages and
-    # responding to them because they contain "Люба" etc.)
+    # CRITICAL: Skip OWN messages — by user_id match.
+    # This is THE primary self-reply prevention. Must be first.
     if u and u.id == config.BOT_ID:
-        return False
-    # Skip other bots (avoid loops)
-    if u and u.is_bot:
         return False
 
     directed = is_directed_at_lyuba(message)
@@ -117,20 +113,26 @@ async def _should_respond(message: Message) -> bool:
         return True
 
     # Channel-forwarded posts in discussion groups — high proactive chance
-    # (directed check already done above, so this is only for non-directed)
     if message.sender_chat and message.sender_chat.type == "channel":
         return random.random() < config.GROUP_PROACTIVE_PROB
 
     # If this message is a REPLY to another user (a discussion thread),
-    # Lyuba is MORE likely to join the conversation. This makes her participate
-    # in ongoing dialogues between other people.
+    # Lyuba is MORE likely to join the conversation.
     if message.reply_to_message and message.reply_to_message.from_user:
         if message.reply_to_message.from_user.id != config.BOT_ID:
-            # Reply to another user = active discussion → higher chance to join
+            # Reply to another user/bot = active discussion → higher chance to join
             last_bot = await db.last_bot_message_time(message.chat.id)
             if (time.time() - last_bot) < config.GROUP_MIN_INTERVAL:
                 return False
-            return random.random() < (config.GROUP_PROACTIVE_PROB + 0.2)  # +20% for discussions
+            return random.random() < (config.GROUP_PROACTIVE_PROB + 0.2)
+
+    # Other bots' messages (not directed at Lyuba): lower proactive chance
+    # (avoids endless bot-to-bot chatter, but still allows some interaction)
+    if u and u.is_bot:
+        last_bot = await db.last_bot_message_time(message.chat.id)
+        if (time.time() - last_bot) < config.GROUP_MIN_INTERVAL:
+            return False
+        return random.random() < (config.GROUP_PROACTIVE_PROB * 0.3)  # 18% for bots
 
     # Proactive: high probability, but respect min interval to avoid flood
     last_bot = await db.last_bot_message_time(message.chat.id)
@@ -252,15 +254,17 @@ async def handle_group_photo(message: Message):
     - Albums: only process the FIRST photo (skip subsequent ones with same
       media_group_id) to avoid duplicate responses — BUT still respond if
       that first photo is directed at Lyuba.
-    - CRITICAL: Never react/respond to own photos or other bots' photos.
+    - CRITICAL: Never react/respond to own photos (anti-self-reply).
+      Other bots' photos ARE allowed (Lyuba can interact with bots).
     """
     if message.chat.type not in ("group", "supergroup"):
         return
     if message.from_user is None:
         return
-    # CRITICAL: Skip own messages and other bots — prevents self-reply loops
+    # CRITICAL: Skip OWN messages — prevents self-reply loops.
+    # Other bots ARE allowed (Lyuba can chat with them).
     u = message.from_user
-    if u.id == config.BOT_ID or u.is_bot:
+    if u.id == config.BOT_ID:
         return
     caption = extract_caption(message)
     await _log_group_message(message, content=caption, is_media=True, media_caption=caption,
@@ -345,9 +349,10 @@ async def handle_group_text(message: Message):
         return
     if message.from_user is None:
         return
-    # CRITICAL: Skip own messages and other bots — prevents self-reply loops
+    # CRITICAL: Skip OWN messages — prevents self-reply loops.
+    # Other bots ARE allowed (Lyuba can chat with them).
     u = message.from_user
-    if u.id == config.BOT_ID or u.is_bot:
+    if u.id == config.BOT_ID:
         return
     text = (message.text or "").strip()
     if not text:
