@@ -297,14 +297,29 @@ class AIRouter:
         max_tokens = max_tokens or config.CHAT_MAX_TOKENS
         temp = config.CHAT_TEMPERATURE
 
-        # ── Level 0: Local model (chat & comment) ──
+        # ── Level 0: Local model (chat & comment) — with timeout ──
+        # Local model on CPU can be slow (30-60s for long responses).
+        # We give it a short timeout (15s) and limited tokens (256) to ensure
+        # fast responses. If it doesn't finish, we immediately fall through
+        # to cloud providers. This prevents the "Local generation cancelled"
+        # cascade that blocks subsequent requests.
         if route_type in ("chat", "comment") and config.ENABLE_LOCAL_MODEL:
             if await self._local.is_available():
-                resp = await self._local.chat(messages, temperature=temp, max_tokens=max_tokens)
-                if resp.ok:
-                    self._level0 += 1
-                    return resp
-                logger.debug(f"Local failed ({route_type}): {resp.error_message}")
+                # Use fewer tokens for local model (faster generation on CPU)
+                local_max_tokens = min(max_tokens, 300)
+                try:
+                    resp = await asyncio.wait_for(
+                        self._local.chat(messages, temperature=temp, max_tokens=local_max_tokens),
+                        timeout=15.0  # 15s max for local model
+                    )
+                    if resp.ok:
+                        self._level0 += 1
+                        return resp
+                    logger.debug(f"Local failed ({route_type}): {resp.error_message}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Local model timed out (15s) for route={route_type} — falling through to cloud")
+                    # Don't wait for the cancelled C-thread — let it finish in background
+                    # while we use cloud providers for this request.
 
         # ── Level 1+2: Concurrent cloud providers ──
         # Wait for the first SUCCESSFUL response (not just first completion,
