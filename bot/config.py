@@ -81,7 +81,7 @@ class BotConfig:
 
     # ── Web verification ──
     SEARCH_TIMEOUT_SECONDS: int = int(os.getenv("SEARCH_TIMEOUT_SECONDS", "6"))
-    WEB_VERIFY_PROB: float = float(os.getenv("WEB_VERIFY_PROB", "0.7"))
+    WEB_VERIFY_PROB: float = float(os.getenv("WEB_VERIFY_PROB", "0.85"))
 
     # ── Channels Lyuba recommends subscribing to ──
     RECOMMEND_CHANNELS: List[str] = field(default_factory=lambda: [

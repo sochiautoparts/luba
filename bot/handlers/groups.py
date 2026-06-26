@@ -45,17 +45,41 @@ logger = logging.getLogger("luba.groups")
 
 group_router = Router()
 
-_VERIFY_HINTS = ["новост", "правда ли", "это правда", "сколько стоит", "цена",
-                 "когда выйдет", "что случилось", "говорят что", "по данным",
-                 "сегодня", "вчера", "слышал", "прочитал", "вот пишут",
-                 "источник", "статья", "появился", "вышла", "анонс", "запустили"]
+_VERIFY_HINTS = [
+    # News/events
+    "новост", "правда ли", "это правда", "что случилось", "говорят что", "по данным",
+    "сегодня", "вчера", "слышал", "прочитал", "вот пишут", "источник", "статья",
+    "появился", "вышла", "анонс", "запустили", "анонсировал", "выпустил",
+    # Facts/claims
+    "сколько стоит", "цена", "когда выйдет", "узнал что", "оказывается",
+    # Events
+    "прошёл", "прошла", "состоялся", "состоялась", "открыли", "закрыли",
+    "обновил", "обновление", "патч", "версия", "релиз",
+    # Trending
+    "тренд", "вирусный", "популярн", "обсуждают", "хайп",
+]
 
 
 def _needs_verification(text: str) -> bool:
+    """Check if the message contains factual claims, news, or events worth verifying."""
     t = (text or "").lower()
-    if len(t) < 20:
+    if len(t) < 15:
         return False
     return any(h in t for h in _VERIFY_HINTS)
+
+
+def _is_event_or_news(text: str) -> bool:
+    """Check if the message is about an event, news, or happening worth reacting to."""
+    t = (text or "").lower()
+    if len(t) < 10:
+        return False
+    event_hints = [
+        "новост", "событие", "случил", "произош", "прошёл", "прошла",
+        "состоялся", "открыли", "закрыли", "запустили", "анонс", "вышла",
+        "выпустил", "обновлен", "релиз", "появился", "анонсировал",
+        "сегодня", "вчера", "только что", "прямо сейчас",
+    ]
+    return any(h in t for h in event_hints)
 
 
 def _is_politics_or_war(text: str) -> bool:
@@ -126,13 +150,13 @@ async def _should_respond(message: Message) -> bool:
                 return False
             return random.random() < (config.GROUP_PROACTIVE_PROB + 0.2)
 
-    # Other bots' messages (not directed at Lyuba): lower proactive chance
-    # (avoids endless bot-to-bot chatter, but still allows some interaction)
+    # Other bots' messages (not directed at Lyuba): moderate proactive chance
+    # (30% — allows active bot-to-bot interaction, but still below human rate)
     if u and u.is_bot:
         last_bot = await db.last_bot_message_time(message.chat.id)
         if (time.time() - last_bot) < config.GROUP_MIN_INTERVAL:
             return False
-        return random.random() < (config.GROUP_PROACTIVE_PROB * 0.3)  # 18% for bots
+        return random.random() < 0.30  # 30% for bots
 
     # Proactive: high probability, but respect min interval to avoid flood
     last_bot = await db.last_bot_message_time(message.chat.id)
@@ -194,24 +218,47 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     # fast and cheap. (Vision stays enabled for private 1-on-1 chats.)
     # If a photo has no caption, we note "(фото без подписи)" in the prompt.
 
-    # Web verification (concurrent, best-effort)
-    # Lyuba verifies/supplements event info when the message contains factual
-    # claims, news, prices, dates — she adds a source link naturally.
+    # Web verification — ALWAYS for events/news, high probability for factual claims
+    # Lyuba verifies/supplements event info: news, prices, dates, claims.
+    # She adds a source link naturally and complements the news with details.
     verify_task = None
-    if _needs_verification(text) and random.random() < config.WEB_VERIFY_PROB:
-        verify_task = asyncio.create_task(verify_claim(text[:300]))
+    is_event = _is_event_or_news(text)
+    needs_verify = _needs_verification(text)
+    if is_event:
+        # Events/news → ALWAYS verify (100%) to supplement with real info
+        verify_task = asyncio.create_task(verify_claim(text[:400]))
+    elif needs_verify and random.random() < config.WEB_VERIFY_PROB:
+        # Factual claims → 85% chance
+        verify_task = asyncio.create_task(verify_claim(text[:400]))
 
     # Always use the comment() path for groups — it does NOT touch the user's
     # private chat_history (group context comes from extra_context above).
     # The extra_context already tells Lyuba whether the message is directed at her.
+    # Build the prompt for the AI
     prompt = strip_mention(text) if directed else text
     if not prompt:
         prompt = "(сообщение без текста — прокомментируй контекст чата, вступи в беседу)"
-    if directed:
-        prompt = "Тебе пишут напрямую (адресовано тебе). Ответь живо, можно чуть подробнее. Обратись по имени если уместно.\n" + prompt
+
+    # For events/news: instruct Lyuba to react, supplement, and share opinion
+    if is_event:
+        prompt = (
+            "В группе поделились событием/новостью. Отреагируй живо — "
+            "прокомментируй событие, дополни информацией если знаешь, "
+            "поделись своим мнением. Обратись к автору по имени если уместно. "
+            "Если в контексте есть результаты веб-поиска — используй их для дополнения.\n" + prompt
+        )
+    elif directed:
+        prompt = (
+            "Тебе пишут напрямую (адресовано тебе). Ответь живо, можно чуть подробнее. "
+            "Обратись по имени если уместно.\n" + prompt
+        )
     else:
         # Proactive: encourage joining the discussion and addressing the speaker
-        prompt = "Вступи в беседу — прокомментируй это сообщение живо. Ответь участнику, задай вопрос или поделись мнением. Обратись по имени если уместно.\n" + prompt
+        prompt = (
+            "Вступи в беседу — прокомментируй это сообщение живо. "
+            "Ответь участнику, задай вопрос или поделись мнением. "
+            "Обратись по имени если уместно.\n" + prompt
+        )
 
     try:
         resp = await asyncio.wait_for(
@@ -228,15 +275,20 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     if out:
         out = out[:limit]
 
-    # Append verification if needed
+    # Append verification result — for events/news ALWAYS add source if found
     if verify_task is not None:
         try:
-            vctx = await asyncio.wait_for(verify_task, timeout=2.0)
+            vctx = await asyncio.wait_for(verify_task, timeout=3.0)
             if vctx:
                 import re as _re
                 m = _re.search(r"https?://\S+", vctx)
-                if m and ("не уверена" in out.lower() or "не знаю" in out.lower()):
-                    out += f" вот: {m.group(0)}"
+                if m:
+                    # For events/news: always append source link
+                    # For factual claims: only if Lyuba expressed uncertainty
+                    if is_event or ("не уверена" in out.lower() or "не знаю" in out.lower() or "вот" not in out.lower()):
+                        # Avoid duplicate links
+                        if m.group(0) not in out:
+                            out += f"\n\nИсточник: {m.group(0)}"
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             pass
 
