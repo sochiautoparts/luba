@@ -218,8 +218,8 @@ jobs:
           PARTNERS_URL: "https://sochiautoparts.ru/partners.json"
           # Group activity — VERY ACTIVE in groups, within Telegram limits (~20 msg/min/group)
           # safe_send handles RetryAfter (waits + retries). Directed mentions ALWAYS answered.
-          GROUP_PROACTIVE_PROB: "0.6"
-          GROUP_MIN_INTERVAL: "5"
+          GROUP_PROACTIVE_PROB: "0.75"
+          GROUP_MIN_INTERVAL: "3"
           GROUP_MAX_PER_MINUTE: "15"
           GROUP_MEMORY_SIZE: "30"
           LOG_LEVEL: INFO

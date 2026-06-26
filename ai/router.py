@@ -106,22 +106,22 @@ def _adaptive_length_hint(prompt: str) -> str:
 
     Returns a short instruction telling the model how long to be:
       - "короткая реакция"   (1 sentence, ~50-120 chars) — quick comments, emoji-like
-      - "средний ответ"      (2-3 sentences, ~150-280 chars) — normal chat
-      - "развёрнутый ответ"  (3-5 sentences, ~300-500 chars) — questions, discussions
+      - "средний ответ"      (2-4 sentences, ~150-400 chars) — normal chat
+      - "развёрнутый ответ"  (3-6 sentences, ~400-700 chars) — questions, discussions
     The model still chooses; this is a nudge, not a hard cap.
     """
     p = (prompt or "").strip()
     # Question to Lyuba → she can be a bit more elaborate
     if "?" in p and len(p) > 40:
-        return "ДЛИНА: развёрнутый ответ (3-5 предложений), задай встречный вопрос если уместно."
+        return "ДЛИНА: развёрнутый ответ (3-6 предложений), задай встречный вопрос если уместно."
     # Very short prompt (greeting, exclamation) → short reaction
     if len(p) < 30 or p.endswith("!") or p.endswith("😄") or p.endswith("👍"):
         return "ДЛИНА: короткая живая реакция (1 предложение)."
     # Long thoughtful message → medium discussion reply
     if len(p) > 200:
-        return "ДЛИНА: средний ответ (2-3 предложения), подхвали тему и задай вопрос."
+        return "ДЛИНА: развёрнутый ответ (3-5 предложений), подхвали тему и задай вопрос."
     # Default
-    return "ДЛИНА: средний ответ (1-3 предложения, по ситуации). Иногда задай встречный вопрос."
+    return "ДЛИНА: средний ответ (2-4 предложения, по ситуации). Часто задай встречный вопрос."
 
 
 # ── Static fallbacks (when all providers fail) ────────────────────────────────
