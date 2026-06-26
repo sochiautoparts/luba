@@ -27,6 +27,37 @@ from bot.config import config
 logger = logging.getLogger("luba.ai.optional")
 
 
+def _contains_non_cyrillic_script(text: str) -> bool:
+    """Detect if text contains significant non-Cyrillic/Latin script (CJK, Arabic, etc.).
+
+    Qwen2.5-7B occasionally hallucinates Chinese text at high temperature.
+    We reject responses where >5% of characters are CJK/Arabic/Devanagari.
+    """
+    if not text:
+        return False
+    non_cyrillic = 0
+    total_letters = 0
+    for ch in text:
+        if ch.isalpha():
+            total_letters += 1
+            cp = ord(ch)
+            # CJK Unified Ideographs + extensions
+            if 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
+                non_cyrillic += 1
+            # Hiragana + Katakana
+            elif 0x3040 <= cp <= 0x30FF:
+                non_cyrillic += 1
+            # Arabic
+            elif 0x0600 <= cp <= 0x06FF:
+                non_cyrillic += 1
+            # Hangul
+            elif 0xAC00 <= cp <= 0xD7AF:
+                non_cyrillic += 1
+    if total_letters == 0:
+        return False
+    return (non_cyrillic / total_letters) > 0.05
+
+
 # ── OpenAI-compatible base (Groq, OpenRouter) ─────────────────────────────────
 
 class _OpenAICompatProvider(BaseAIProvider):
@@ -265,9 +296,10 @@ class CloudflareProvider(BaseAIProvider):
 # ── HuggingFace Inference API ─────────────────────────────────────────────────
 
 class HuggingFaceProvider(BaseAIProvider):
-    """HuggingFace Inference API — chat completion (free tier)."""
+    """HuggingFace Inference API — chat completion + vision (free tier)."""
     name = "huggingface"
     MODEL = "Qwen/Qwen2.5-7B-Instruct"
+    VISION_MODEL = "Qwen/Qwen3-VL-8B-Instruct"  # vision-capable, free with HF token
 
     def __init__(self):
         super().__init__()
@@ -297,8 +329,49 @@ class HuggingFaceProvider(BaseAIProvider):
                 text = choices[0]["message"]["content"] if choices else ""
                 text = (text or "").strip()
                 if text:
+                    # Detect CJK/Arabic hallucinations (Qwen2.5 occasionally appends
+                    # Chinese text at high temperature). Reject and fail over.
+                    if _contains_non_cyrillic_script(text):
+                        logger.debug("HF response contains non-Cyrillic script — rejecting (hallucination)")
+                        return self._fail("hallucination detected (non-Cyrillic script)")
                     return self._ok(text, model=model or self.MODEL)
                 return self._fail("empty response")
+            return self._fail(f"HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            return self._fail(str(e))
+
+    async def analyze_image(self, image_url: str, prompt: str,
+                            system_prompt: str = "") -> AIResponse:
+        """Vision via HuggingFace router with Qwen3-VL-8B model."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt or "Опиши что на картинке."},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        })
+        payload = {
+            "model": self.VISION_MODEL,
+            "messages": messages,
+            "max_tokens": 500,
+            "temperature": 0.4,
+        }
+        url = "https://router.huggingface.co/v1/chat/completions"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=payload,
+                                         headers={"Authorization": f"Bearer {self._api_key}"})
+            if resp.status_code == 200:
+                data = resp.json()
+                choices = data.get("choices", [])
+                text = choices[0]["message"]["content"] if choices else ""
+                text = (text or "").strip()
+                if text:
+                    return self._ok(text, model=self.VISION_MODEL)
+                return self._fail("empty vision response")
             return self._fail(f"HTTP {resp.status_code}: {resp.text[:200]}")
         except Exception as e:
             return self._fail(str(e))

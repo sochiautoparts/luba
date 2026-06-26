@@ -261,7 +261,7 @@ class AIRouter:
         # Build ordered list of vision-capable providers
         vision_providers = []
         for p in self._optional:
-            if p.name in ("gemini", "groq"):
+            if p.name in ("gemini", "groq", "huggingface"):
                 vision_providers.append(p)
         # Pollinations free (always available, but vision often rate-limited)
         vision_providers.append(self._pollinations_free)
