@@ -150,13 +150,15 @@ async def _should_respond(message: Message) -> bool:
                 return False
             return random.random() < (config.GROUP_PROACTIVE_PROB + 0.2)
 
-    # Other bots' messages (not directed at Lyuba): moderate proactive chance
-    # (30% — allows active bot-to-bot interaction, but still below human rate)
+    # Other bots' messages (not directed at Lyuba): high proactive chance
+    # (50% — active bot-to-bot interaction, makes groups lively)
+    # Bots get a SHORTER min interval (3s) so bot-to-bot chats feel responsive
     if u and u.is_bot:
         last_bot = await db.last_bot_message_time(message.chat.id)
-        if (time.time() - last_bot) < config.GROUP_MIN_INTERVAL:
+        bot_interval = max(3, config.GROUP_MIN_INTERVAL - 2)  # 3s for bots
+        if (time.time() - last_bot) < bot_interval:
             return False
-        return random.random() < 0.30  # 30% for bots
+        return random.random() < 0.50  # 50% for bots — active interaction
 
     # Proactive: high probability, but respect min interval to avoid flood
     last_bot = await db.last_bot_message_time(message.chat.id)

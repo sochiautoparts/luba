@@ -61,20 +61,25 @@ def is_directed_at_lyuba(message: Message) -> bool:
 
     CRITICAL: This function is called AFTER _should_respond already filters
     out Lyuba's own messages (message.from_user.id == BOT_ID). So we never
-    check directed on Lyuba's own messages here. But we still guard against
-    self-reference: don't treat "Люба" in Lyuba's OWN text as a directed
-    mention (she often says "я Люба" in her responses).
+    check directed on Lyuba's own messages here.
+
+    For OTHER bots and humans: we check both @asluba_bot mention AND the
+    word "Люба"/"любаша" — because other bots (Ася, Маша, Настя) often
+    address Lyuba by name without @. Self-reply is already prevented by
+    the BOT_ID check in _should_respond, so checking "люба" here is safe.
     """
     if message.chat.type == "private":
         return True
     text = message.text or message.caption or ""
     handle = config.BOT_HANDLE.lower()
-    # Only check for @mention — NOT the bare word "Люба" (which appears in
-    # Lyuba's own responses like "я Люба из Сочи" and causes self-reply loops).
+    # @asluba_bot mention → directed
     if f"@{handle}" in text.lower():
         return True
-    # Reply to Lyuba's message (by user ID, not is_bot flag — is_bot would
-    # match ANY bot, causing false positives when other bots are in the chat)
+    # "Люба" or "любаша" in text → directed (other bots/humans addressing Lyuba)
+    # Safe because _should_respond already filtered out Lyuba's own messages
+    if "люба" in text.lower() or "любаша" in text.lower():
+        return True
+    # Reply to Lyuba's message (by user ID)
     if message.reply_to_message:
         rep = message.reply_to_message
         if rep.from_user and rep.from_user.id == config.BOT_ID:
