@@ -241,19 +241,26 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     # Web verification — ALWAYS for events/news, high probability for factual claims
     # Lyuba verifies/supplements event info: news, prices, dates, claims.
     # She adds a source link naturally and complements the news with details.
-    verify_task = None
     is_event = _is_event_or_news(text)
     needs_verify = _needs_verification(text)
+    web_context = ""
     if is_event:
         # Events/news → ALWAYS verify (100%) to supplement with real info
-        verify_task = asyncio.create_task(verify_claim(text[:400]))
+        try:
+            web_context = await asyncio.wait_for(verify_claim(text[:400]), timeout=8.0)
+        except (asyncio.TimeoutError, Exception):
+            web_context = ""
     elif needs_verify and random.random() < config.WEB_VERIFY_PROB:
         # Factual claims → 85% chance
-        verify_task = asyncio.create_task(verify_claim(text[:400]))
+        try:
+            web_context = await asyncio.wait_for(verify_claim(text[:400]), timeout=8.0)
+        except (asyncio.TimeoutError, Exception):
+            web_context = ""
 
-    # Always use the comment() path for groups — it does NOT touch the user's
-    # private chat_history (group context comes from extra_context above).
-    # The extra_context already tells Lyuba whether the message is directed at her.
+    # Add web search results to AI context so Lyuba can USE them in her response
+    if web_context:
+        extra_ctx += f"\n\nРЕЗУЛЬТАТЫ ВЕБ-ПОИСКА (используй для дополнения ответа):\n{web_context}"
+
     # Build the prompt for the AI
     prompt = strip_mention(text) if directed else text
     if not prompt:
@@ -265,19 +272,22 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
             "В группе поделились событием/новостью. Отреагируй живо — "
             "прокомментируй событие, дополни информацией если знаешь, "
             "поделись своим мнением. Обратись к автору по имени если уместно. "
-            "Если в контексте есть результаты веб-поиска — используй их для дополнения.\n" + prompt
+            "Если в контексте есть результаты веб-поиска — ОБЯЗАТЕЛЬНО используй их для дополнения. "
+            "Добавь ссылку на источник если есть.\n" + prompt
         )
     elif directed:
         prompt = (
             "Тебе пишут напрямую (адресовано тебе). Ответь живо, можно чуть подробнее. "
-            "Обратись по имени если уместно.\n" + prompt
+            "Обратись по имени если уместно. "
+            "Если есть результаты веб-поиска — используй для дополнения ответа.\n" + prompt
         )
     else:
         # Proactive: encourage joining the discussion and addressing the speaker
         prompt = (
             "Вступи в беседу — прокомментируй это сообщение живо. "
             "Ответь участнику, задай вопрос или поделись мнением. "
-            "Обратись по имени если уместно.\n" + prompt
+            "Обратись по имени если уместно. "
+            "Если есть результаты веб-поиска — используй для дополнения.\n" + prompt
         )
 
     try:
@@ -295,22 +305,13 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     if out:
         out = out[:limit]
 
-    # Append verification result — for events/news ALWAYS add source if found
-    if verify_task is not None:
-        try:
-            vctx = await asyncio.wait_for(verify_task, timeout=3.0)
-            if vctx:
-                import re as _re
-                m = _re.search(r"https?://\S+", vctx)
-                if m:
-                    # For events/news: always append source link
-                    # For factual claims: only if Lyuba expressed uncertainty
-                    if is_event or ("не уверена" in out.lower() or "не знаю" in out.lower() or "вот" not in out.lower()):
-                        # Avoid duplicate links
-                        if m.group(0) not in out:
-                            out += f"\n\nИсточник: {m.group(0)}"
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-            pass
+    # Web results are already in AI context (web_context added to extra_ctx above).
+    # If AI didn't include a source link but we have web results, append it.
+    if web_context and is_event:
+        import re as _re
+        m = _re.search(r"https?://\S+", web_context)
+        if m and m.group(0) not in out:
+            out += f"\n\nИсточник: {m.group(0)}"
 
     return out.strip()
 

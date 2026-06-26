@@ -205,12 +205,18 @@ async def _process_private(message: Message, text: str):
     except Exception as e:
         logger.debug(f"partner links error: {e}")
 
-    # Web verification (concurrent with AI)
-    verify_ctx = ""
-    need_verify = _needs_verification(text) and random.random() < config.WEB_VERIFY_PROB
-    verify_task = None
+    # Web verification — BEFORE AI call so results are in context
+    need_verify = _needs_verification(text)
+    web_context = ""
     if need_verify:
-        verify_task = asyncio.create_task(verify_claim(text))
+        try:
+            web_context = await asyncio.wait_for(verify_claim(text), timeout=8.0)
+        except (asyncio.TimeoutError, Exception):
+            web_context = ""
+
+    # Add web search results to AI context so Lyuba can USE them
+    if web_context:
+        extra_ctx += f"\n\nРЕЗУЛЬТАТЫ ВЕБ-ПОИСКА (используй для дополнения ответа):\n{web_context}"
 
     try:
         response = await asyncio.wait_for(
@@ -229,23 +235,14 @@ async def _process_private(message: Message, text: str):
         await message.answer("ой, застряла немного 🙈 давай ещё раз?")
         return
 
-    # Attach verification result if available
-    if verify_task is not None:
-        try:
-            verify_ctx = await asyncio.wait_for(verify_task, timeout=3.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            verify_ctx = ""
-        except Exception:
-            verify_ctx = ""
-
     await status.delete()
     out = response.text or random.choice(persona.thinking_phrases)
-    if verify_ctx and ("не уверена" in out.lower() or "не знаю" in out.lower() or need_verify):
-        # Append a compact verification note
+    # If AI didn't include source but we have web results, append compact note
+    if web_context:
         import re as _re
-        first_url = _re.search(r"https?://\S+", verify_ctx)
-        if first_url:
-            out += f"\n\nвот, нашла кое-что: {first_url.group(0)}"
+        first_url = _re.search(r"https?://\S+", web_context)
+        if first_url and first_url.group(0) not in out:
+            out += f"\n\nвот, нашла: {first_url.group(0)}"
     # Use safe_send (handles RetryAfter for private chats too)
     try:
         from bot.safe_send import safe_send
