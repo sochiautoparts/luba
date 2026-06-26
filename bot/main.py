@@ -116,6 +116,13 @@ class LyubaBot:
         asyncio.create_task(mood_loop(), name="mood_loop")
         asyncio.create_task(db.run_periodic_cleanup(), name="cleanup_loop")
         asyncio.create_task(self._site_refresh_loop(), name="site_refresh")
+        # Proactive topic starter — Lyuba initiates conversations in silent groups
+        try:
+            from bot.proactive import proactive_loop
+            asyncio.create_task(proactive_loop(), name="proactive_loop")
+            logger.info("Proactive topic starter enabled")
+        except Exception as e:
+            logger.warning(f"Proactive loop failed to start (non-fatal): {e}")
 
         # Notify owner that bot is alive
         await self._notify_owner()
