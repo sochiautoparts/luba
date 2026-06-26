@@ -57,22 +57,27 @@ def chat_descriptor(chat: Chat) -> str:
 
 
 def is_directed_at_lyuba(message: Message) -> bool:
-    """Is this message directed at Lyuba (mention, reply to her, or private)?"""
+    """Is this message directed at Lyuba (mention, reply to her, or private)?
+
+    CRITICAL: This function is called AFTER _should_respond already filters
+    out Lyuba's own messages (message.from_user.id == BOT_ID). So we never
+    check directed on Lyuba's own messages here. But we still guard against
+    self-reference: don't treat "Люба" in Lyuba's OWN text as a directed
+    mention (she often says "я Люба" in her responses).
+    """
     if message.chat.type == "private":
         return True
     text = message.text or message.caption or ""
     handle = config.BOT_HANDLE.lower()
+    # Only check for @mention — NOT the bare word "Люба" (which appears in
+    # Lyuba's own responses like "я Люба из Сочи" and causes self-reply loops).
     if f"@{handle}" in text.lower():
         return True
-    if f"люба" in text.lower() or "любаша" in text.lower():
-        return True
-    # Reply to Lyuba's message
+    # Reply to Lyuba's message (by user ID, not is_bot flag — is_bot would
+    # match ANY bot, causing false positives when other bots are in the chat)
     if message.reply_to_message:
         rep = message.reply_to_message
         if rep.from_user and rep.from_user.id == config.BOT_ID:
-            return True
-        if rep.from_user and rep.from_user.is_bot:
-            # reply to a bot message that might be Lyuba's
             return True
     return False
 

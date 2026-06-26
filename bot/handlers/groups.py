@@ -70,7 +70,16 @@ def _is_politics_or_war(text: str) -> bool:
 
 async def _log_group_message(message: Message, content: str = "", is_media: bool = False,
                               media_caption: str = "", is_bot: bool = False):
+    """Log a group message to the DB for context.
+
+    is_bot: True if this is Lyuba's own message (she's logging her reply).
+    For incoming messages, is_bot is determined by checking message.from_user.id.
+    """
     u = message.from_user
+    # If not explicitly marked as bot (Lyuba's own reply), check if the
+    # message author IS Lyuba (avoids mislabeling her messages as non-bot)
+    if not is_bot and u and u.id == config.BOT_ID:
+        is_bot = True
     await db.add_group_message(
         chat_id=message.chat.id,
         user_id=u.id if u else 0,
@@ -88,14 +97,19 @@ async def _should_respond(message: Message) -> bool:
 
     Lyuba is VERY ACTIVE: responds to direct mentions/replies ALWAYS,
     and proactively comments on most other messages (high probability).
-    Only skips: other bots (loop prevention), own messages, politics/war.
+    Only skips: other bots (avoid loops), own messages, politics/war.
+
+    CRITICAL ANTI-SELF-REPLY: Never respond to own messages. This is the
+    primary prevention against Lyuba replying to herself.
     """
     u = message.from_user
-    # Skip other bots (avoid loops)
-    if u and u.is_bot and u.id != config.BOT_ID:
-        return False
-    # Skip own messages
+    # CRITICAL: Skip own messages — by user_id match.
+    # This prevents self-reply loops (Lyuba seeing her own messages and
+    # responding to them because they contain "Люба" etc.)
     if u and u.id == config.BOT_ID:
+        return False
+    # Skip other bots (avoid loops)
+    if u and u.is_bot:
         return False
 
     directed = is_directed_at_lyuba(message)
@@ -238,10 +252,15 @@ async def handle_group_photo(message: Message):
     - Albums: only process the FIRST photo (skip subsequent ones with same
       media_group_id) to avoid duplicate responses — BUT still respond if
       that first photo is directed at Lyuba.
+    - CRITICAL: Never react/respond to own photos or other bots' photos.
     """
     if message.chat.type not in ("group", "supergroup"):
         return
     if message.from_user is None:
+        return
+    # CRITICAL: Skip own messages and other bots — prevents self-reply loops
+    u = message.from_user
+    if u.id == config.BOT_ID or u.is_bot:
         return
     caption = extract_caption(message)
     await _log_group_message(message, content=caption, is_media=True, media_caption=caption,
@@ -325,6 +344,10 @@ async def handle_group_text(message: Message):
     if message.chat.type not in ("group", "supergroup"):
         return
     if message.from_user is None:
+        return
+    # CRITICAL: Skip own messages and other bots — prevents self-reply loops
+    u = message.from_user
+    if u.id == config.BOT_ID or u.is_bot:
         return
     text = (message.text or "").strip()
     if not text:
