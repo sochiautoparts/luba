@@ -83,12 +83,14 @@ def _is_event_or_news(text: str) -> bool:
 
 
 def _is_politics_or_war(text: str) -> bool:
-    """Detect topics Lyuba must avoid. She'll stay quiet on these."""
+    """Detect topics Lyuba must avoid. She'll stay quiet on these.
+    Only triggers on EXPLICIT political/military context — not generic words."""
     t = (text or "").lower()
+    # Only block explicit political figures + military terms
     triggers = ["путин", "кремль", "госдума", "санкци", "сво", "мобилиз",
                 "война", "зеленск", "байден", "трамп", "выборы", "парламент",
-                "оранжев", "наци", "террор", "обеднен", "ввс", "удар",
-                "ракетн", "обстрел"]
+                "оранжев", "наци", "террор", "обеднен", "обстрел"]
+    # Removed: "ввс" (too generic), "удар" (too generic — удар по мячу etc.)
     return any(w in t for w in triggers)
 
 
@@ -228,28 +230,16 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     # fast and cheap. (Vision stays enabled for private 1-on-1 chats.)
     # If a photo has no caption, we note "(фото без подписи)" in the prompt.
 
-    # Web verification — ALWAYS for events/news, high probability for factual claims
-    # Lyuba verifies/supplements event info: news, prices, dates, claims.
-    # She adds a source link naturally and complements the news with details.
+    # Web verification — CONCURRENT with AI (non-blocking!)
+    # Previous version blocked 5s before AI call → in active groups messages
+    # piled up → bot seemed inactive. Now runs in parallel.
     is_event = _is_event_or_news(text)
     needs_verify = _needs_verification(text)
-    web_context = ""
+    verify_task = None
     if is_event:
-        # Events/news → ALWAYS verify (100%) to supplement with real info
-        try:
-            web_context = await asyncio.wait_for(verify_claim(text[:400]), timeout=5.0)
-        except (asyncio.TimeoutError, Exception):
-            web_context = ""
+        verify_task = asyncio.create_task(verify_claim(text[:400]))
     elif needs_verify and random.random() < config.WEB_VERIFY_PROB:
-        # Factual claims → 85% chance
-        try:
-            web_context = await asyncio.wait_for(verify_claim(text[:400]), timeout=5.0)
-        except (asyncio.TimeoutError, Exception):
-            web_context = ""
-
-    # Add web search results to AI context so Lyuba can USE them in her response
-    if web_context:
-        extra_ctx += f"\n\nРЕЗУЛЬТАТЫ ВЕБ-ПОИСКА (используй для дополнения ответа):\n{web_context}"
+        verify_task = asyncio.create_task(verify_claim(text[:400]))
 
     # Build the prompt for the AI
     prompt = strip_mention(text) if directed else text
@@ -261,23 +251,18 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
         prompt = (
             "В группе поделились событием/новостью. Отреагируй живо — "
             "прокомментируй событие, дополни информацией если знаешь, "
-            "поделись своим мнением. Обратись к автору по имени если уместно. "
-            "Если в контексте есть результаты веб-поиска — ОБЯЗАТЕЛЬНО используй их для дополнения. "
-            "Добавь ссылку на источник если есть.\n" + prompt
+            "поделись своим мнением. Обратись к автору по имени если уместно.\n" + prompt
         )
     elif directed:
         prompt = (
             "Тебе пишут напрямую (адресовано тебе). Ответь живо, можно чуть подробнее. "
-            "Обратись по имени если уместно. "
-            "Если есть результаты веб-поиска — используй для дополнения ответа.\n" + prompt
+            "Обратись по имени если уместно.\n" + prompt
         )
     else:
-        # Proactive: encourage joining the discussion and addressing the speaker
         prompt = (
             "Вступи в беседу — прокомментируй это сообщение живо. "
             "Ответь участнику, задай вопрос или поделись мнением. "
-            "Обратись по имени если уместно. "
-            "Если есть результаты веб-поиска — используй для дополнения.\n" + prompt
+            "Обратись по имени если уместно.\n" + prompt
         )
 
     try:
@@ -295,13 +280,17 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     if out:
         out = out[:limit]
 
-    # Web results are already in AI context (web_context added to extra_ctx above).
-    # If AI didn't include a source link but we have web results, append it.
-    if web_context and is_event:
-        import re as _re
-        m = _re.search(r"https?://\S+", web_context)
-        if m and m.group(0) not in out:
-            out += f"\n\nИсточник: {m.group(0)}"
+    # Append web search results as source link (non-blocking — 2s max wait)
+    if verify_task is not None:
+        try:
+            vctx = await asyncio.wait_for(verify_task, timeout=2.0)
+            if vctx:
+                import re as _re
+                m = _re.search(r"https?://\S+", vctx)
+                if m and m.group(0) not in out:
+                    out += f"\n\nИсточник: {m.group(0)}"
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            pass
 
     return out.strip()
 
