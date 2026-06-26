@@ -106,9 +106,43 @@ async def search_yandex(query: str, max_results: int = 5) -> List[SearchResult]:
     return results
 
 
+async def search_searxng(query: str, max_results: int = 5) -> List[SearchResult]:
+    """Search using SearXNG public instances (privacy-focused meta search)."""
+    results: List[SearchResult] = []
+    instances = [
+        "https://searx.be/search",
+        "https://search.sapti.me/search",
+        "https://searx.tiekoetter.com/search",
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Accept": "text/html",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    }
+    for instance in instances:
+        try:
+            # Short per-instance timeout (4s) so one slow instance doesn't block
+            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+                resp = await client.get(instance, params={"q": query, "format": "html"}, headers=headers)
+            if resp.status_code != 200:
+                continue
+            urls = re.findall(r'<h[34]>.*?<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>', resp.text, re.DOTALL)
+            for url, title in urls[:max_results]:
+                title = _clean_html(title)
+                if url and title and "searx" not in url:
+                    results.append(SearchResult(title=title, url=url, source="searxng"))
+            if results:
+                break
+        except Exception as e:
+            logger.debug(f"SearXNG search error ({instance}): {e}")
+    return results
+
+
 async def web_search(query: str, max_results: int = 5) -> List[SearchResult]:
-    """Try DDG first, then Yandex. Returns combined unique results."""
+    """Try DDG first, then SearXNG, then Yandex. Returns combined unique results."""
     results = await search_ddg_html(query, max_results=max_results)
+    if not results:
+        results = await search_searxng(query, max_results=max_results)
     if not results:
         results = await search_yandex(query, max_results=max_results)
     # Dedup by URL

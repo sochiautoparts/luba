@@ -104,7 +104,7 @@ class PollinationsProvider(BaseAIProvider):
         params["referrer"] = config.BOT_USERNAME.lstrip("@")
         url = f"{self._free_url}/{quote_plus(prompt[:3000])}"
         try:
-            async with httpx.AsyncClient(timeout=12.0) as client:
+            async with httpx.AsyncClient(timeout=8.0) as client:
                 resp = await client.get(url, params=params, headers=self._headers())
             if resp.status_code == 200:
                 text = resp.text.strip()
@@ -142,7 +142,7 @@ class PollinationsProvider(BaseAIProvider):
         for url in urls:
             for attempt in range(2):  # one retry on 429
                 try:
-                    async with httpx.AsyncClient(timeout=20.0) as client:
+                    async with httpx.AsyncClient(timeout=15.0) as client:
                         resp = await client.post(url, json=payload, headers=self._headers())
                     if resp.status_code == 200:
                         data = resp.json()
