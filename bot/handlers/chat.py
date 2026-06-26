@@ -160,25 +160,36 @@ async def _process_private(message: Message, text: str):
     mood = await current_mood_descriptor()
     extra_ctx = build_private_context(message)
 
-    # Channel + site recommendations context
+    # Channel + site recommendations context (always present, used sparingly)
     extra_ctx += (
-        "\n\nРЕКОМЕНДАЦИИ (только если к месту, ~1 из 8 сообщений):\n"
+        "\n\nРЕКОМЕНДАЦИИ (только если к месту, ~1 из 6 сообщений):\n"
         "- Каналы: https://t.me/sochiautoparts (авто-новости), https://t.me/bmw_mpower_club (BMW клуб)\n"
         "- Магазин: https://sochiautoparts.ru/shop | Статьи: https://sochiautoparts.ru"
     )
 
-    # Occasionally include a real product / post from the site
+    # Include real product / post from the site — higher probability for shopping-related topics
     try:
-        if random.random() < 0.25:
+        t_lower = (text or "").lower()
+        is_shopping = any(k in t_lower for k in [
+            "купить", "магазин", "цена", "стоим", "заказ", "товар", "запчаст",
+            "детал", "артикул", "подобрать", "найти", "выбор", "рекоменд"
+        ])
+        product_prob = 0.5 if is_shopping else 0.25
+        post_prob = 0.25 if is_shopping else 0.12
+
+        if random.random() < product_prob:
             from bot import site_content as sc
             prod = await sc.relevant_product(text)
             if prod:
-                extra_ctx += "\n\nСЛУЧАЙНЫЙ ТОВАР ИЗ МАГАЗИНА (упомяни если к месту):\n" + sc.format_product_for_context(prod)
-        if random.random() < 0.12:
+                extra_ctx += (
+                    "\n\nТОВАР ИЗ МАГАЗИНА sochiautoparts.ru/shop (упомяни если к месту, "
+                    "не навязывай):\n" + sc.format_product_for_context(prod)
+                )
+        if random.random() < post_prob:
             from bot import site_content as sc
             post = await sc.random_post()
             if post:
-                extra_ctx += "\n\nСВЕЖИЙ ПОСТ НА САЙТЕ: " + sc.format_post_for_context(post)
+                extra_ctx += "\n\nСВЕЖИЙ ПОСТ НА САЙТЕ (можешь поделиться если уместно): " + sc.format_post_for_context(post)
     except Exception as e:
         logger.debug(f"site content error: {e}")
 

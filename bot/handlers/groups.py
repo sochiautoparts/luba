@@ -180,35 +180,53 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     mood = await current_mood_descriptor()
     extra_ctx = build_group_context(message, recent_text, memory_facts)
 
-    # Partner links
+    # Partner links — context-aware: only when message text matches partner categories
+    # (auto, travel, shopping, electronics, etc.). Lyuba weaves ONE link naturally.
     try:
         links = partner_manager.get_all_partner_links_for_dialog(text, max_programs=2)
         if links:
-            extra_ctx += "\n\nПартнёрские ссылки (ОДНА если к месту, КАК ЕСТЬ):\n"
+            extra_ctx += (
+                "\n\nПАРТНЁРСКИЕ ССЫЛКИ (вставь ОДНУ если к месту в беседе, естественно, не в каждом ответе):\n"
+            )
             for pl in links:
-                extra_ctx += f"- {pl['name']}: {pl['url']}\n"
+                extra_ctx += f"- {pl['name']} ({pl.get('label','')}): {pl['url']}\n"
+            extra_ctx += "Не рекламируй в лоб — предложи как вариант если тема подходит."
     except Exception as e:
         logger.debug(f"partner links error: {e}")
 
-    # Channel recommendations context (so Lyuba can suggest subscribing)
+    # Channel + site recommendations (always in context, but Lyuba uses sparingly)
     extra_ctx += (
-        "\n\nРЕКОМЕНДАЦИИ (только если к месту, ~1 из 8 сообщений):\n"
+        "\n\nРЕКОМЕНДАЦИИ (только если к месту, ~1 из 6 сообщений):\n"
         "- Каналы: https://t.me/sochiautoparts (авто-новости), https://t.me/bmw_mpower_club (BMW клуб)\n"
         "- Магазин: https://sochiautoparts.ru/shop | Статьи: https://sochiautoparts.ru"
     )
 
-    # Occasionally include a real product / post from the site for context
+    # Include a real product / post from the site for context — higher probability
+    # when the message is about shopping/parts/cars/products
     try:
-        if random.random() < 0.3:
+        # Check if message is shopping/product-related → higher chance to include product
+        t_lower = (text or "").lower()
+        is_shopping = any(k in t_lower for k in [
+            "купить", "магазин", "цена", "стоим", "заказ", "товар", "запчаст",
+            "детал", "артикул", "подобрать", "найти", "выбор", "рекоменд"
+        ])
+        product_prob = 0.5 if is_shopping else 0.25
+        post_prob = 0.25 if is_shopping else 0.12
+
+        if random.random() < product_prob:
             from bot import site_content as sc
+            # Try relevant product first (matches keywords), fall back to random
             prod = await sc.relevant_product(text) if text else await sc.random_product()
             if prod:
-                extra_ctx += "\n\nСЛУЧАЙНЫЙ ТОВАР ИЗ МАГАЗИНА (можешь упомянуть если к месту):\n" + sc.format_product_for_context(prod)
-        if random.random() < 0.15:
+                extra_ctx += (
+                    "\n\nТОВАР ИЗ МАГАЗИНА sochiautoparts.ru/shop (упомяни если к месту, "
+                    "не навязывай):\n" + sc.format_product_for_context(prod)
+                )
+        if random.random() < post_prob:
             from bot import site_content as sc
             post = await sc.random_post()
             if post:
-                extra_ctx += "\n\nСВЕЖИЙ ПОСТ НА САЙТЕ: " + sc.format_post_for_context(post)
+                extra_ctx += "\n\nСВЕЖИЙ ПОСТ НА САЙТЕ (можешь поделиться если уместно): " + sc.format_post_for_context(post)
     except Exception as e:
         logger.debug(f"site content error: {e}")
 
