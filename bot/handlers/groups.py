@@ -123,12 +123,14 @@ async def _should_respond(message: Message) -> bool:
     Only skips: OWN messages (anti-self-reply), politics/war.
 
     ANTI-SELF-REPLY (critical): Never respond to own messages (by user_id).
-    Other bots ARE allowed — Lyuba can chat with them if they @mention her
-    or reply to her. This makes groups more lively.
+    Other bots ARE allowed — Lyuba can chat with them.
+
+    NOTE: GROUP_MIN_INTERVAL is NOT used here anymore — safe_send's
+    per-chat rate limiter (GROUP_MAX_PER_MINUTE) handles flood control.
+    This ensures Lyuba is equally active in ALL groups, not just quiet ones.
     """
     u = message.from_user
     # CRITICAL: Skip OWN messages — by user_id match.
-    # This is THE primary self-reply prevention. Must be first.
     if u and u.id == config.BOT_ID:
         return False
 
@@ -145,25 +147,13 @@ async def _should_respond(message: Message) -> bool:
     if message.reply_to_message and message.reply_to_message.from_user:
         if message.reply_to_message.from_user.id != config.BOT_ID:
             # Reply to another user/bot = active discussion → higher chance to join
-            last_bot = await db.last_bot_message_time(message.chat.id)
-            if (time.time() - last_bot) < config.GROUP_MIN_INTERVAL:
-                return False
             return random.random() < (config.GROUP_PROACTIVE_PROB + 0.2)
 
     # Other bots' messages (not directed at Lyuba): high proactive chance
-    # (65% — active bot-to-bot interaction, makes groups lively)
-    # Bots get a SHORTER min interval (2s) so bot-to-bot chats feel responsive
     if u and u.is_bot:
-        last_bot = await db.last_bot_message_time(message.chat.id)
-        bot_interval = max(2, config.GROUP_MIN_INTERVAL - 1)  # 2s for bots
-        if (time.time() - last_bot) < bot_interval:
-            return False
         return random.random() < 0.65  # 65% for bots — very active interaction
 
-    # Proactive: high probability, but respect min interval to avoid flood
-    last_bot = await db.last_bot_message_time(message.chat.id)
-    if (time.time() - last_bot) < config.GROUP_MIN_INTERVAL:
-        return False
+    # Proactive: high probability (safe_send handles rate limiting)
     return random.random() < config.GROUP_PROACTIVE_PROB
 
 
@@ -247,13 +237,13 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     if is_event:
         # Events/news → ALWAYS verify (100%) to supplement with real info
         try:
-            web_context = await asyncio.wait_for(verify_claim(text[:400]), timeout=8.0)
+            web_context = await asyncio.wait_for(verify_claim(text[:400]), timeout=5.0)
         except (asyncio.TimeoutError, Exception):
             web_context = ""
     elif needs_verify and random.random() < config.WEB_VERIFY_PROB:
         # Factual claims → 85% chance
         try:
-            web_context = await asyncio.wait_for(verify_claim(text[:400]), timeout=8.0)
+            web_context = await asyncio.wait_for(verify_claim(text[:400]), timeout=5.0)
         except (asyncio.TimeoutError, Exception):
             web_context = ""
 

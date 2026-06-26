@@ -210,7 +210,7 @@ async def _process_private(message: Message, text: str):
     web_context = ""
     if need_verify:
         try:
-            web_context = await asyncio.wait_for(verify_claim(text), timeout=8.0)
+            web_context = await asyncio.wait_for(verify_claim(text), timeout=5.0)
         except (asyncio.TimeoutError, Exception):
             web_context = ""
 
