@@ -115,7 +115,7 @@ def _adaptive_length_hint(prompt: str) -> str:
     if "?" in p and len(p) > 40:
         return "ДЛИНА: развёрнутый ответ (3-6 предложений), задай встречный вопрос если уместно."
     # Very short prompt (greeting, exclamation) → short reaction
-    if len(p) < 30 or p.endswith("!") or p.endswith("😄") or p.endswith("👍"):
+    if len(p) < 30:
         return "ДЛИНА: короткая живая реакция (1 предложение)."
     # Long thoughtful message → medium discussion reply
     if len(p) > 200:

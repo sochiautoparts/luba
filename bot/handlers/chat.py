@@ -238,11 +238,16 @@ async def _process_private(message: Message, text: str):
     await status.delete()
     out = response.text or random.choice(persona.thinking_phrases)
     # If AI didn't include source but we have web results, append compact note
-    if web_context:
-        import re as _re
-        first_url = _re.search(r"https?://\S+", web_context)
-        if first_url and first_url.group(0) not in out:
-            out += f"\n\nвот, нашла: {first_url.group(0)}"
+    if verify_task is not None:
+        try:
+            vctx = await asyncio.wait_for(verify_task, timeout=2.0)
+            if vctx:
+                import re as _re
+                first_url = _re.search(r"https?://\S+", vctx)
+                if first_url and first_url.group(0) not in out:
+                    out += f"\n\nвот, нашла: {first_url.group(0)}"
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            pass
     # Use safe_send (handles RetryAfter for private chats too)
     try:
         from bot.safe_send import safe_send

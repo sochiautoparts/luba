@@ -451,3 +451,33 @@ async def handle_group_text(message: Message):
     except Exception as e:
         logger.debug(f"safe_reply failed: {e}")
     await _log_group_message(message, content=out, is_media=False, is_bot=True)
+
+    # Extract and store long-term facts about users (memory)
+    try:
+        await _extract_and_store_memory(message, text)
+    except Exception as e:
+        logger.debug(f"memory extraction error: {e}")
+
+
+async def _extract_and_store_memory(message: Message, text: str):
+    """Extract personal facts from user messages and store in group_memory."""
+    if not text or not message.from_user:
+        return
+    t = text.lower().strip()
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    name = message.from_user.first_name or ""
+    patterns = [
+        ("я живу в ", "живёт в"), ("я из ", "из"), ("я работаю ", "работает"),
+        ("у меня собака", "есть собака"), ("у меня кот", "есть кот"),
+        ("я люблю ", "любит"), ("мне нравится ", "нравится"),
+        ("я обожаю ", "обожает"), ("я фрилансер", "фрилансер"),
+    ]
+    for pattern, label in patterns:
+        if pattern in t:
+            idx = t.index(pattern) + len(pattern)
+            rest = text[idx:idx+80].split(".")[0].split("!")[0].split("?")[0].strip()
+            if rest and 2 < len(rest) < 80:
+                fact = f"{name} {label} {rest}"
+                await db.add_group_memory(chat_id, user_id, fact)
+                break

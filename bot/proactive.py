@@ -15,6 +15,11 @@ also STARTS conversations — exactly as a real engaged group member would.
 """
 
 import asyncio
+_bot_ref = None
+
+def set_bot(bot):
+    global _bot_ref
+    _bot_ref = bot
 import logging
 import random
 import time
@@ -109,7 +114,8 @@ async def _check_and_start_topic(chat_id: int) -> None:
 
         # Rate limit check
         if str(chat_id).startswith("-"):
-            if not await db._check_rate(chat_id, config.GROUP_MAX_PER_MINUTE):
+            from bot.safe_send import _check_rate as _safe_check_rate
+            if not await _safe_check_rate(chat_id, config.GROUP_MAX_PER_MINUTE):
                 return
 
         # Generate a topic-starter message
@@ -151,7 +157,10 @@ async def _check_and_start_topic(chat_id: int) -> None:
             return
 
         # Send the topic-starter
-        sent = await safe_send(__import__("aiogram").Bot(token=config.BOT_TOKEN), chat_id, text)
+        _bot = _bot_ref
+        if _bot is None:
+            return
+        sent = await safe_send(_bot, chat_id, text)
         if sent:
             logger.info(f"Started proactive topic in group {chat_id} after {silence/3600:.1f}h silence")
             # Log as Lyuba's message

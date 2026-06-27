@@ -369,8 +369,13 @@ async def cleanup_old_cache(max_age_days: int = 7) -> None:
 
 
 async def run_periodic_cleanup() -> None:
-    """Trim old group_messages beyond memory size and old cache."""
-    try:
-        await cleanup_old_cache(max_age_days=7)
-    except Exception:
-        pass
+    """Periodic cleanup loop — runs every hour."""
+    import asyncio as _a
+    while True:
+        try:
+            await _a.sleep(3600)
+            await cleanup_old_cache(max_age_days=7)
+        except _a.CancelledError:
+            break
+        except Exception:
+            await _a.sleep(60)
