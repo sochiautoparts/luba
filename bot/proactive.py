@@ -40,6 +40,11 @@ SILENCE_THRESHOLD = 2 * 3600  # 2 hours
 CHECK_INTERVAL = 10 * 60  # 10 minutes
 # Min time between Lyuba's proactive topics in the same group
 MIN_TOPIC_INTERVAL = 3 * 3600  # 3 hours
+# Chance to inject a topic EVEN in active groups (no silence required).
+# Makes Lyuba an active participant who starts conversations, not just responds.
+ACTIVE_GROUP_INJECTION_PROB = 0.08  # 8% per check in active groups
+# Min time between Lyuba's injections in active groups (shorter than silent)
+ACTIVE_MIN_INTERVAL = 45 * 60  # 45 min between injections in same active group
 
 
 # Topic starter templates — Lyuba uses these to spark conversations
@@ -92,9 +97,15 @@ async def _get_active_groups() -> List[Dict]:
 
 
 async def _check_and_start_topic(chat_id: int) -> None:
-    """Check if group is silent and Lyuba should start a topic."""
+    """Check if group needs a topic — either after silence OR active injection.
+
+    Two modes:
+      1. SILENT group (silence > 2h): always start a topic (if min interval passed)
+      2. ACTIVE group (recent activity): 8% chance to inject a topic
+         (if 45min since last Lyuba message) — makes her an active participant
+         who starts conversations, not just responds.
+    """
     try:
-        # Get last message time (any user) in this group
         recent = await db.get_recent_group_messages(chat_id, limit=5)
         if not recent:
             return
@@ -103,14 +114,25 @@ async def _check_and_start_topic(chat_id: int) -> None:
         now = time.time()
         silence = now - last_msg_time
 
-        # Only start topic if silence > threshold
-        if silence < SILENCE_THRESHOLD:
-            return
-
         # Check if Lyuba already started a topic recently
         last_bot = await db.last_bot_message_time(chat_id)
-        if (now - last_bot) < MIN_TOPIC_INTERVAL:
-            return
+        since_bot = now - last_bot
+
+        is_silent = silence >= SILENCE_THRESHOLD
+        # Active injection: 8% chance, only if 45min since last Lyuba msg
+        is_active_inject = (
+            not is_silent
+            and random.random() < ACTIVE_GROUP_INJECTION_PROB
+            and since_bot >= ACTIVE_MIN_INTERVAL
+        )
+
+        if is_silent:
+            if since_bot < MIN_TOPIC_INTERVAL:
+                return
+        elif is_active_inject:
+            pass  # OK, inject into active group
+        else:
+            return  # neither silent nor injection triggered
 
         # Rate limit check
         if str(chat_id).startswith("-"):
@@ -122,28 +144,37 @@ async def _check_and_start_topic(chat_id: int) -> None:
         recent_text = recent_messages_to_text(recent, limit=4)
         mood = await current_mood_descriptor()
 
-        # Pick a random topic + starter
         topic = random.choice(GENERAL_TOPICS)
         starter = random.choice(TOPIC_STARTERS)
 
-        prompt = (
-            f"В группе «{chat_id}» давно тишина ({silence/3600:.0f}ч). "
-            f"Начни беседу — поделись мыслью/новостью/вопросом чтобы оживить чат. "
-            f"Тема для старта: {topic}. Используй оборот вроде «{starter}». "
-            f"Коротко, живо, 1-2 предложения. Задай вопрос группе."
-        )
+        if is_silent:
+            prompt = (
+                f"В группе давно тишина ({silence/3600:.0f}ч). "
+                f"Начни беседу — поделись мыслью/новостью/вопросом чтобы оживить чат. "
+                f"Тема для старта: {topic}. Используй оборот вроде «{starter}». "
+                f"Коротко, живо, 1-2 предложения. Задай вопрос группе."
+            )
+        else:
+            # Active injection — react to recent context, add a thought/question
+            prompt = (
+                f"В группе активная беседа. Вступи со СВОЕЙ мыслью/вопросом/фактом — "
+                f"не просто комментируй, а подними новую грань темы или смежную тему. "
+                f"Можно: {topic}. Используй оборот вроде «{starter}». "
+                f"Коротко, живо, 1-2 предложения. Задай вопрос группе. "
+                f"Не повторяй то, что уже сказали другие."
+            )
 
         extra_ctx = (
-            f"Ты в группе. Иницируешь беседу после тишины. "
+            f"Ты в группе. {'Иницируешь беседу после тишины' if is_silent else 'Вступаешь со своей мыслью в активную беседу'}. "
             f"Настроение: {mood}. "
-            f"Недавний контекст (если есть):\n{recent_text}\n"
+            f"Недавний контекст:\n{recent_text}\n"
             f"Будь естественной, не формальной. Цель — вовлечь людей в разговор."
         )
 
         try:
             text = await asyncio.wait_for(
                 ai_client.comment(prompt, extra_context=extra_ctx, mood=mood),
-                timeout=20.0,
+                timeout=40.0,
             )
         except asyncio.TimeoutError:
             return
@@ -155,14 +186,13 @@ async def _check_and_start_topic(chat_id: int) -> None:
         if not text:
             return
 
-        # Send the topic-starter
         _bot = _bot_ref
         if _bot is None:
             return
         sent = await safe_send(_bot, chat_id, text)
         if sent:
-            logger.info(f"Started proactive topic in group {chat_id} after {silence/3600:.1f}h silence")
-            # Log as Lyuba's message
+            mode = "silent" if is_silent else "active-inject"
+            logger.info(f"Proactive topic ({mode}) in group {chat_id} | silence={silence/60:.0f}min | text={text[:50]!r}")
             await db.add_group_message(
                 chat_id=chat_id,
                 user_id=config.BOT_ID,

@@ -69,15 +69,26 @@ def _needs_verification(text: str) -> bool:
 
 
 def _is_event_or_news(text: str) -> bool:
-    """Check if the message is about an event, news, or happening worth reacting to."""
+    """Check if the message is about an event, news, fact, or happening worth reacting to."""
     t = (text or "").lower()
     if len(t) < 10:
         return False
     event_hints = [
+        # News/events
         "новост", "событие", "случил", "произош", "прошёл", "прошла",
         "состоялся", "открыли", "закрыли", "запустили", "анонс", "вышла",
         "выпустил", "обновлен", "релиз", "появился", "анонсировал",
         "сегодня", "вчера", "только что", "прямо сейчас",
+        # Facts/claims (Настя's posts style)
+        "факт", "жесть факт", "знали что", "прикинь", "ого",
+        "самый", "крупнейший", "первый в", "единственный",
+        "посещаем", "популярн", "известн",
+        # Discovery/learning
+        "открыла для себя", "узнала", "только что узнала", "не знала",
+        "оказывает", "прикинь",
+        # Polls/discussions
+        "опрос дня", "опрос:", "как вы считаете", "что думаете",
+        "кто тоже", "а вы",
     ]
     return any(h in t for h in event_hints)
 
@@ -223,16 +234,21 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     # fast and cheap. (Vision stays enabled for private 1-on-1 chats.)
     # If a photo has no caption, we note "(фото без подписи)" in the prompt.
 
-    # Web verification — CONCURRENT with AI (non-blocking!)
-    # Previous version blocked 5s before AI call → in active groups messages
-    # piled up → bot seemed inactive. Now runs in parallel.
+    # ── Web verification: BEFORE AI call so results feed into the prompt ──
+    # Lyuba uses web search to verify/supplement facts, news, events, prices.
+    # Results go INTO extra_ctx so the AI can USE them in its answer (not just
+    # append a URL after). Timeout 5с — DuckDuckGo usually responds in 2-4с.
     is_event = _is_event_or_news(text)
     needs_verify = _needs_verification(text)
-    verify_task = None
-    if is_event:
-        verify_task = asyncio.create_task(verify_claim(text[:400]))
-    elif needs_verify and random.random() < config.WEB_VERIFY_PROB:
-        verify_task = asyncio.create_task(verify_claim(text[:400]))
+    web_context = ""
+    if is_event or (needs_verify and random.random() < config.WEB_VERIFY_PROB):
+        try:
+            web_context = await asyncio.wait_for(verify_claim(text[:400]), timeout=5.0)
+            if web_context:
+                extra_ctx += f"\n\nРезультаты веб-поиска (используй для дополнения ответа, упомяни источник если уместно):\n{web_context}"
+                logger.info(f"GROUP WEB SEARCH found context ({len(web_context)} chars)")
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.debug(f"web search failed: {e}")
 
     # Build the prompt for the AI
     prompt = strip_mention(text) if directed else text
@@ -242,8 +258,8 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     # For events/news: instruct Lyuba to react, supplement, and share opinion
     if is_event:
         prompt = (
-            "В группе поделились событием/новостью. Отреагируй живо — "
-            "прокомментируй событие, дополни информацией если знаешь, "
+            "В группе поделились событием/новостью/фактом. Отреагируй живо — "
+            "прокомментируй, дополни информацией если знаешь (или из веб-поиска), "
             "поделись своим мнением. Обратись к автору по имени если уместно.\n" + prompt
         )
     elif directed:
@@ -258,12 +274,15 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
             "Обратись по имени если уместно.\n" + prompt
         )
 
+    # Timeout 40с: semaphore serialization + retry backoff (1+2+4=7с per provider)
+    # может занять время при параллельных сообщениях. 40с даёт margin.
     try:
         out = await asyncio.wait_for(
             ai_client.comment(prompt, extra_context=extra_ctx, mood=mood),
-            timeout=20.0,
+            timeout=40.0,
         )
     except asyncio.TimeoutError:
+        logger.warning(f"GROUP AI timeout (40s) chat={message.chat.id}")
         return ""
 
     out = out or ""
@@ -273,16 +292,14 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     if out:
         out = out[:limit]
 
-    # Append web search results as source link (non-blocking — 2s max wait)
-    if verify_task is not None:
+    # Если веб-поиск нашёл URL и AI его не упомянул — добавить как источник
+    if web_context:
         try:
-            vctx = await asyncio.wait_for(verify_task, timeout=2.0)
-            if vctx:
-                import re as _re
-                m = _re.search(r"https?://\S+", vctx)
-                if m and m.group(0) not in out:
-                    out += f"\n\nИсточник: {m.group(0)}"
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            import re as _re
+            m = _re.search(r"https?://\S+", web_context)
+            if m and m.group(0) not in out:
+                out += f"\n\nИсточник: {m.group(0)}"
+        except Exception:
             pass
 
     return out.strip()

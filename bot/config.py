@@ -70,13 +70,16 @@ class BotConfig:
     PARTNER_REFRESH_HOURS: int = int(os.getenv("PARTNER_REFRESH_HOURS", "6"))
 
     # ── Group activity tuning ──
-    GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.60"))
+    # Lyuba VERY ACTIVE: responds to mentions/replies ALWAYS, proactively
+    # comments on 75% of other messages (was 60%).
+    GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.75"))
     GROUP_MAX_PER_MINUTE: int = int(os.getenv("GROUP_MAX_PER_MINUTE", "15"))
     GROUP_MEMORY_SIZE: int = int(os.getenv("GROUP_MEMORY_SIZE", "30"))
 
     # ── Web verification ──
-    SEARCH_TIMEOUT_SECONDS: int = int(os.getenv("SEARCH_TIMEOUT_SECONDS", "6"))
-    WEB_VERIFY_PROB: float = float(os.getenv("WEB_VERIFY_PROB", "0.85"))
+    # Always verify events/facts (was 85%) — Lyuba uses web search actively
+    SEARCH_TIMEOUT_SECONDS: int = int(os.getenv("SEARCH_TIMEOUT_SECONDS", "8"))
+    WEB_VERIFY_PROB: float = float(os.getenv("WEB_VERIFY_PROB", "1.0"))
 
     # ── Channels Lyuba recommends ──
     RECOMMEND_CHANNELS: List[str] = field(default_factory=lambda: [
