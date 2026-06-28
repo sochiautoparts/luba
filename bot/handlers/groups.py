@@ -133,14 +133,13 @@ async def _should_respond(message: Message) -> bool:
 
     Lyuba is VERY ACTIVE: responds to direct mentions/replies ALWAYS,
     and proactively comments on most other messages (high probability).
-    Only skips: OWN messages (anti-self-reply), politics/war.
 
-    ANTI-SELF-REPLY (critical): Never respond to own messages (by user_id).
-    Other bots ARE allowed — Lyuba can chat with them.
-
-    NOTE: GROUP_MIN_INTERVAL is NOT used here anymore — safe_send's
-    per-chat rate limiter (GROUP_MAX_PER_MINUTE) handles flood control.
-    This ensures Lyuba is equally active in ALL groups, not just quiet ones.
+    SKIP cases:
+      - OWN messages (anti-self-reply)
+      - Channel auto-forwards (user_id 777000 = Telegram service, or
+        sender_chat=channel, or forward_from_chat, or "[sochiautoparts]"
+        prefix). These flood 5+ groups simultaneously — commenting in all
+        = spam. Lyuba REACTS (emoji) but does NOT write text.
     """
     u = message.from_user
     # CRITICAL: Skip OWN messages — by user_id match.
@@ -151,20 +150,27 @@ async def _should_respond(message: Message) -> bool:
     if directed:
         return True
 
-    # Channel-forwarded posts in discussion groups — high proactive chance
-    if message.sender_chat and message.sender_chat.type == "channel":
-        return random.random() < config.GROUP_PROACTIVE_PROB
+    # Channel auto-forwarded posts: SKIP text response (would spam 5+ groups).
+    # user_id 777000 = Telegram service account that auto-forwards channel
+    # posts to discussion groups. React only, no text.
+    is_channel_forward = (
+        (u and u.id == 777000)
+        or (message.sender_chat and message.sender_chat.type == "channel")
+        or (message.forward_from_chat is not None)
+        or (message.text and message.text.startswith("[sochiautoparts]"))
+    )
+    if is_channel_forward:
+        return False  # reaction only (handled in handle_group_text)
 
     # If this message is a REPLY to another user (a discussion thread),
     # Lyuba is MORE likely to join the conversation.
     if message.reply_to_message and message.reply_to_message.from_user:
         if message.reply_to_message.from_user.id != config.BOT_ID:
-            # Reply to another user/bot = active discussion → higher chance to join
             return random.random() < (config.GROUP_PROACTIVE_PROB + 0.2)
 
     # Other bots' messages (not directed at Lyuba): high proactive chance
     if u and u.is_bot:
-        return random.random() < 0.65  # 65% for bots — very active interaction
+        return random.random() < 0.65
 
     # Proactive: high probability (safe_send handles rate limiting)
     return random.random() < config.GROUP_PROACTIVE_PROB
@@ -504,16 +510,26 @@ async def _extract_and_store_memory(message: Message, text: str):
     """Extract personal facts from user messages and store in group_memory.
 
     Lyuba remembers facts about users: city, work, pets, hobbies, family,
-    preferences, plans. These are injected into context for future replies
-    ("Иван живёт в Москве", "у Маши есть кот", etc.).
+    preferences, plans. These are injected into context for future replies.
     """
     if not text or not message.from_user:
         return
+    # НЕ извлекаем факты из channel-forwards (user_id 777000 = Telegram service)
+    # и из сообщений ботов — это не реальные люди
+    u = message.from_user
+    if u.id == 777000 or u.is_bot or u.id == config.BOT_ID:
+        return
+    # Проверяем что это не channel forward
+    if (message.sender_chat and message.sender_chat.type == "channel") or \
+       message.forward_from_chat is not None or \
+       (text and text.startswith("[sochiautoparts]")):
+        return
+
     t = text.lower().strip()
-    user_id = message.from_user.id
+    user_id = u.id
     chat_id = message.chat.id
-    name = message.from_user.first_name or ""
-    # Расширено: больше паттернов для фактов о людях
+    name = u.first_name or ""
+    # Только чёткие паттерны (без общих типа "у меня " → "имеет" = мусор)
     patterns = [
         ("я живу в ", "живёт в"), ("я из ", "из"), ("я работаю ", "работает"),
         ("я работаю в ", "работает в"), ("я учусь ", "учится"),
@@ -523,19 +539,15 @@ async def _extract_and_store_memory(message: Message, text: str):
         ("я обожаю ", "обожает"), ("я ненавижу ", "не любит"),
         ("я фрилансер", "фрилансер"), ("я программист", "программист"),
         ("я дизайнер", "дизайнер"), ("я маркетолог", "маркетолог"),
-        ("я езжу на ", "ездит на"), ("у меня ", "имеет"),
+        ("я езжу на ", "ездит на"),
         ("я был в ", "был в"), ("я была в ", "была в"),
-        ("мне ", " "),  # слишком общее — убрано
     ]
     for pattern, label in patterns:
-        if pattern == "мне ":
-            continue  # пропускаем общий паттерн
         if pattern in t:
             idx = t.index(pattern) + len(pattern)
             rest = text[idx:idx+80].split(".")[0].split("!")[0].split("?")[0].strip()
             if rest and 2 < len(rest) < 80:
                 fact = f"{name} {label} {rest}"
-                # Проверяем что такого факта ещё нет (дедупликация)
                 existing = await db.get_group_memory(chat_id, user_id=user_id, limit=20)
                 existing_facts = [r["fact"].lower() for r in existing]
                 if fact.lower() not in existing_facts:

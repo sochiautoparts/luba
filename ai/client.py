@@ -322,27 +322,27 @@ async def _pollinations_post(http: httpx.AsyncClient, messages: list, max_tokens
 async def _pollinations_get(http: httpx.AsyncClient, messages: list, max_tokens: int) -> Tuple[Optional[str], int]:
     """Pollinations GET endpoint — fallback если POST упал. ~0.3с.
 
-    GET встраивает промт в URL. Используем компактный cue вместо полного system
-    промта (чтобы избежать утечек меток). Role-метки 'Люба:'/'Собеседник:'
-    добавляем для контекста диалога — clean_response их уберёт.
+    GET встраивает промт в URL. Если промт > 1100 символов — SKIP
+    (вернёт 414 URI Too Long). Используем компактный cue.
     """
     try:
         from urllib.parse import quote_plus
-        # Компактный cue — без меток промта
         parts = ["Ты Люба — живая девушка 28 лет из Сочи. Общайся живым русским, коротко, без markdown. Без политики и войны."]
-        user_msg = ""
         for m in messages:
             role = m.get("role", "user")
             content = m.get("content", "")
             if not content or role == "system":
                 continue
             if role == "assistant":
-                parts.append(f"Люба: {content[:300]}")
+                parts.append(f"Люба: {content[:200]}")
             else:
-                parts.append(f"Собеседник: {content[:800]}")
-                user_msg = content
+                parts.append(f"Собеседник: {content[:400]}")
         parts.append("Люба:")
-        prompt = "\n".join(parts)[:2500]  # URL limit safety
+        prompt = "\n".join(parts)[:1200]
+        # Если промт слишком длинный — не пытаемся GET (точно 414)
+        if len(prompt) > 1100:
+            logger.debug(f"Pollinations GET skip: prompt too long ({len(prompt)} chars)")
+            return None, 414
         params = {
             "model": "openai",
             "private": "true",
@@ -361,7 +361,6 @@ async def _pollinations_get(http: httpx.AsyncClient, messages: list, max_tokens:
         text = resp.text.strip()
         if not text or len(text) < 2:
             return None, 200
-        # Убираем обёртывающие кавычки если есть
         if text.startswith('"') and text.endswith('"'):
             text = text[1:-1]
         return text, 200
@@ -598,11 +597,11 @@ class AIClient:
         self._total += 1
         sys_prompt = self._build_system(extra_context, mood)
         messages = [{"role": "system", "content": sys_prompt}]
-        # Подмешиваем недавний диалог как proper messages (role: user/assistant)
+        # Подмешиваем недавний диалог (5 последних — короче промт, быстрее API)
         if dialog_history:
-            for h in dialog_history[-10:]:  # последние 10 сообщений
+            for h in dialog_history[-5:]:  # последние 5 (было 10 — слишком длинно)
                 role = h.get("role", "user")
-                content = h.get("content", "")[:500]
+                content = h.get("content", "")[:400]
                 if content:
                     messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": prompt[:2000]})
