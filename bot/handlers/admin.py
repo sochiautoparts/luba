@@ -24,15 +24,19 @@ async def cmd_stats(message: Message):
     if not _is_owner(message):
         return
     stats = ai_client.stats()
-    await message.answer(
-        f"📊 Статистика Любы v2.0:\n"
-        f"Всего запросов: {stats['total']}\n"
-        f"HuggingFace (primary): {stats['huggingface']} (errors: {stats['hf_errors']})\n"
-        f"Pollinations (backup): {stats['pollinations']} (errors: {stats['poll_errors']})\n"
-        f"Статический фолбэк: {stats['static']}\n"
-        f"HF circuit open: {stats['hf_circuit_open']}\n"
-        f"Poll circuit open: {stats['poll_circuit_open']}"
-    )
+    lines = [
+        f"📊 Статистика Любы v2.1:",
+        f"Всего запросов: {stats['total']}",
+        f"Статический фолбэк: {stats['static']}",
+        "",
+        "Провайдеры (по приоритету):",
+    ]
+    for name, pstats in stats["providers"].items():
+        circuit = "🔴 OPEN" if pstats["circuit_open"] else "🟢 OK"
+        lines.append(
+            f"  {name:12} | ok={pstats['ok']:4} | errors={pstats['errors']} | {circuit}"
+        )
+    await message.answer("\n".join(lines))
 
 
 @admin_router.message(Command("channel_on"))

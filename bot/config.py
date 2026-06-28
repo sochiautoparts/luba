@@ -1,20 +1,27 @@
 """
-Люба Bot Configuration v2.0 — упрощённый.
+Люба Bot Configuration v2.1 — мульти-провайдерная бесплатная архитектура.
 
-Убрано:
-  - Локальная модель (source of segfaults, 15s timeouts)
-  - Optional providers (Groq/Gemini/OpenRouter/Cloudflare) — не настроены,
-    только усложняли код. HF Qwen2.5-7B как primary + Pollinations free
-    как backup покрывают все потребности.
+AI-провайдеры (порядок = приоритет, авто-включение при наличии ключа):
+  1. Groq        — Llama 3.3 70B, ~0.4с, free tier (30 req/min, 14K req/day)
+  2. Gemini      — gemini-2.0-flash, ~1с, free tier (15 req/min, 1500/day)
+  3. Pollinations — GPT-OSS 20B, free, no auth (всегда доступен)
+  4. OpenRouter  — Llama 3.3 70B free, free tier (50 req/day)
+  5. HuggingFace — Qwen2.5-7B, если есть credits (часто 402 depleted)
+  6. Cloudflare  — Workers AI, 10K req/day free (если есть ключ)
+  Запас: статические фразы
 
-Оставлено:
-  - Telegram (BOT_TOKEN, OWNER_ID)
-  - HuggingFace (HF_TOKEN) — primary AI provider
-  - Pollinations (free, no auth) — backup
-  - GitHub PAT для self-dispatch
-  - SQLite DB
-  - Partners / site content
-  - Group activity tuning
+Каждый провайдер имеет свой circuit breaker (3 errors → 120s cooldown).
+Линейный failover: первый успех выигрывает, без гонок.
+
+Бесплатные ключи (пользователь добавляет в GitHub Secrets):
+  - GROQ_API_KEY       — https://console.groq.com/keys
+  - GEMINI_API_KEY     — https://aistudio.google.com/apikey
+  - OPENROUTER_API_KEY — https://openrouter.ai/keys
+  - HF_TOKEN           — https://huggingface.co/settings/tokens
+  - CF_ACCOUNT_ID_1 + CF_API_TOKEN_1 — https://dash.cloudflare.com/
+
+Минимум для работы: НИЧЕГО (Pollinations free всегда доступен).
+Рекомендуется: GROQ + GEMINI для скорости и надёжности.
 """
 
 import os
@@ -32,13 +39,23 @@ class BotConfig:
     BOT_ID: int = int(os.getenv("BOT_ID", "8614302697"))
     OWNER_ID: int = int(os.getenv("OWNER_ID", "265070804"))
 
-    # ── HuggingFace (PRIMARY AI provider) ──
-    # router.huggingface.co — Qwen2.5-7B-Instruct, ~0.8s, стабильно
-    HF_TOKEN: str = os.getenv("HF_TOKEN", "")
-
-    # ── Pollinations (BACKUP, free, no auth — always available) ──
+    # ── AI Providers (free tiers) ──
+    # Groq — Llama 3.3 70B, самый быстрый (~0.4с), free
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    # Google Gemini — gemini-2.0-flash, free tier
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    # Pollinations — GPT-OSS 20B, free, no auth (всегда работает)
     POLLINATIONS_API_KEY: str = os.getenv("POLLINATIONS_API_KEY", "")
     POLLINATIONS_API_KEY_2: str = os.getenv("POLLINATIONS_API_KEY_2", "")
+    # OpenRouter — free models (Llama, Mistral)
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+    # HuggingFace — Qwen2.5-7B (часто 402 depleted на free tier)
+    HF_TOKEN: str = os.getenv("HF_TOKEN", "")
+    # Cloudflare Workers AI — Mistral Small 3.1, 10K req/day free
+    CF_ACCOUNT_ID_1: str = os.getenv("CF_ACCOUNT_ID_1", "")
+    CF_API_TOKEN_1: str = os.getenv("CF_API_TOKEN_1", "")
+    CF_ACCOUNT_ID_2: str = os.getenv("CF_ACCOUNT_ID_2", "")
+    CF_API_TOKEN_2: str = os.getenv("CF_API_TOKEN_2", "")
 
     # ── GitHub PAT for 24/7 self-dispatch ──
     GH_PAT_TOKEN: str = os.getenv("GH_PAT_TOKEN", "")
@@ -53,9 +70,6 @@ class BotConfig:
     PARTNER_REFRESH_HOURS: int = int(os.getenv("PARTNER_REFRESH_HOURS", "6"))
 
     # ── Group activity tuning ──
-    # Lyuba VERY ACTIVE in groups: responds to mentions/replies ALWAYS,
-    # proactively comments on 60% of other messages.
-    # safe_send handles RetryAfter (waits + retries) so we can be very active.
     GROUP_PROACTIVE_PROB: float = float(os.getenv("GROUP_PROACTIVE_PROB", "0.60"))
     GROUP_MAX_PER_MINUTE: int = int(os.getenv("GROUP_MAX_PER_MINUTE", "15"))
     GROUP_MEMORY_SIZE: int = int(os.getenv("GROUP_MEMORY_SIZE", "30"))
@@ -91,12 +105,26 @@ class BotConfig:
     def has_pollinations_key(self) -> bool:
         return bool(self.POLLINATIONS_API_KEY or self.POLLINATIONS_API_KEY_2)
 
+    def active_providers(self) -> List[str]:
+        """Список активных провайдеров (с ключами), в порядке приоритета."""
+        providers = []
+        if self.GROQ_API_KEY:
+            providers.append("groq")
+        if self.GEMINI_API_KEY:
+            providers.append("gemini")
+        providers.append("pollinations")  # всегда (free, no auth)
+        if self.OPENROUTER_API_KEY:
+            providers.append("openrouter")
+        if self.HF_TOKEN:
+            providers.append("huggingface")
+        if self.CF_API_TOKEN_1:
+            providers.append("cloudflare")
+        return providers
+
     def providers_status(self) -> str:
         """Краткий статус провайдеров для лога."""
-        parts = []
-        parts.append(f"HF={'ON' if self.HF_TOKEN else 'OFF'}")
-        parts.append("Pollinations=ON(free)")
-        return ", ".join(parts)
+        active = self.active_providers()
+        return f"active={active}, total={len(active)}"
 
 
 config = BotConfig()

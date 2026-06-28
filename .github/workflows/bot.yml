@@ -130,17 +130,29 @@ jobs:
             sed -i '/luba\.db/d' .gitignore
           fi
 
-      - name: Run Lyuba Bot v2.0
+      - name: Run Lyuba Bot v2.1
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           BOT_USERNAME: "@asluba_bot"
           BOT_ID: "8614302697"
           OWNER_ID: ${{ secrets.OWNER_ID }}
-          # HuggingFace (PRIMARY) — Qwen2.5-7B-Instruct через router.huggingface.co
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          # Pollinations (BACKUP, free)
+          # ── AI Providers (free tiers) — auto-enabled when secret is set ──
+          # Groq — Llama 3.3 70B, fastest (~0.4s), free 30 req/min
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Google Gemini — gemini-2.0-flash, free 15 req/min
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Pollinations — GPT-OSS 20B, free, NO AUTH (always available)
           POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
           POLLINATIONS_API_KEY_2: ${{ secrets.POLLINATIONS_API_KEY_2 }}
+          # OpenRouter — free models (Llama 3.3 70B)
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # HuggingFace — Qwen2.5-7B (often 402 depleted on free tier)
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Cloudflare Workers AI — Mistral 3.1, 10K req/day free
+          CF_ACCOUNT_ID_1: ${{ secrets.CF_ACCOUNT_ID_1 }}
+          CF_API_TOKEN_1: ${{ secrets.CF_API_TOKEN_1 }}
+          CF_ACCOUNT_ID_2: ${{ secrets.CF_ACCOUNT_ID_2 }}
+          CF_API_TOKEN_2: ${{ secrets.CF_API_TOKEN_2 }}
           # GitHub PAT for self-dispatch
           GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
           GH_REPO: sochiautoparts/luba
@@ -155,11 +167,10 @@ jobs:
           LOG_LEVEL: INFO
         run: |
           set +e  # disable exit-on-error so retry loop survives any crash
-          echo "=== Starting Lyuba Bot v2.0 ==="
-          echo "PRIMARY: HuggingFace Qwen2.5-7B-Instruct (~0.8s)"
-          echo "BACKUP:  Pollinations openai (free, no auth)"
-          echo "NO LOCAL MODEL — no segfaults, no 15s timeouts"
-          echo "HTTPX: singleton client with connection pooling"
+          echo "=== Starting Lyuba Bot v2.1 ==="
+          echo "MULTI-PROVIDER: Groq → Gemini → Pollinations → OpenRouter → HF → Cloudflare"
+          echo "Auto-detect: only providers with API keys are active"
+          echo "Pollinations always available (free, no auth)"
           echo "=== Launching with UNLIMITED auto-restart ==="
           RETRY=0
           LAST_START=0
