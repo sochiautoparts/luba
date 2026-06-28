@@ -409,14 +409,18 @@ class AIRouter:
 
         # ── Level 0: Local model (chat & comment) — with timeout ──
         # Local model on CPU can be slow (30-60s for long responses).
-        # We give it a short timeout (15s) and limited tokens (256) to ensure
+        # We give it a short timeout (15s) and limited tokens (200) to ensure
         # fast responses. If it doesn't finish, we immediately fall through
-        # to cloud providers. This prevents the "Local generation cancelled"
-        # cascade that blocks subsequent requests.
+        # to cloud providers AND register the timeout as a failure so the
+        # circuit breaker can trip after a few consecutive timeouts — otherwise
+        # the local model keeps accepting requests, accumulating cancelled
+        # C-threads that eventually segfault the process (exit 139).
         if route_type in ("chat", "comment") and config.ENABLE_LOCAL_MODEL:
             if await self._local.is_available():
-                # Use fewer tokens for local model (faster generation on CPU)
-                local_max_tokens = min(max_tokens, 300)
+                # Use fewer tokens for local model (faster generation on CPU).
+                # 200 tokens is enough for a short Lyuba reply and finishes
+                # within the 15s budget on 3 CPU threads more reliably than 300.
+                local_max_tokens = min(max_tokens, 200)
                 try:
                     resp = await asyncio.wait_for(
                         self._local.chat(messages, temperature=temp, max_tokens=local_max_tokens),
@@ -426,10 +430,20 @@ class AIRouter:
                         self._level0 += 1
                         return resp
                     logger.debug(f"Local failed ({route_type}): {resp.error_message}")
+                    # _fail() already called inside LocalProvider.chat on error
                 except asyncio.TimeoutError:
-                    logger.warning(f"Local model timed out (15s) for route={route_type} — falling through to cloud")
-                    # Don't wait for the cancelled C-thread — let it finish in background
-                    # while we use cloud providers for this request.
+                    # CRITICAL: register the timeout as a failure so the circuit
+                    # breaker in BaseAIProvider trips after N consecutive timeouts.
+                    # Without this, the local model keeps being queried, piling
+                    # up cancelled C-threads → segfault (exit 139).
+                    self._local._fail("local model timeout (15s)")
+                    logger.warning(
+                        f"Local model timed out (15s) for route={route_type} — "
+                        f"falling through to cloud (local errors: "
+                        f"{self._local._consecutive_errors})"
+                    )
+                    # Don't wait for the cancelled C-thread — let it finish in
+                    # background while we use cloud providers for this request.
 
         # ── Level 1+2: Concurrent cloud providers ──
         # Wait for the first SUCCESSFUL response (not just first completion,

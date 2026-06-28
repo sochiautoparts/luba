@@ -27,18 +27,28 @@ class BaseAIProvider:
 
     name: str = "base"
 
+    # Circuit-breaker tuning. The local CPU model is the main beneficiary:
+    # when it starts timing out under load, we want to back OFF for a long
+    # time (not 30s) so the OS can reclaim the cancelled C-threads and the
+    # process doesn't get segfaulted by GGML_ASSERT failures.
+    CIRCUIT_ERROR_THRESHOLD: int = 3      # trip after 3 consecutive errors
+    CIRCUIT_COOLDOWN_SECONDS: int = 300   # stay open for 5 minutes once tripped
+
     def __init__(self):
         self._consecutive_errors = 0
         self._circuit_open_until = 0.0  # timestamp when circuit breaker expires
 
     async def is_available(self) -> bool:
         import time
-        # Circuit breaker: if too many errors, skip provider for 30s
-        if self._consecutive_errors >= 5:
+        # Circuit breaker: if too many consecutive errors, skip this provider
+        # for the cooldown window. This prevents the local model from being
+        # re-queried in a tight loop while it's still grinding through cancelled
+        # C-threads (which is what segfaults the process).
+        if self._consecutive_errors >= self.CIRCUIT_ERROR_THRESHOLD:
             if time.time() < self._circuit_open_until:
                 return False
-            # Reset after cooldown
-            self._consecutive_errors = 0
+            # Cooldown elapsed — give the provider one more chance
+            self._consecutive_errors = self.CIRCUIT_ERROR_THRESHOLD - 1
         return True
 
     async def chat(self, messages: List[Dict[str, str]],
@@ -53,8 +63,8 @@ class BaseAIProvider:
     def _fail(self, msg: str) -> AIResponse:
         import time
         self._consecutive_errors += 1
-        if self._consecutive_errors >= 5:
-            self._circuit_open_until = time.time() + 30  # 30s cooldown
+        if self._consecutive_errors >= self.CIRCUIT_ERROR_THRESHOLD:
+            self._circuit_open_until = time.time() + self.CIRCUIT_COOLDOWN_SECONDS
         return AIResponse(error=True, error_message=msg, provider=self.name)
 
     def _ok(self, text: str, model: str = "") -> AIResponse:

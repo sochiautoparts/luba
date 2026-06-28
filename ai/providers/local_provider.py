@@ -182,9 +182,17 @@ class LocalProvider(BaseAIProvider):
         if not await self.is_available():
             return self._fail("local model not available")
 
-        # Circuit breaker: too many recent errors → skip local for a bit
-        if self._consecutive_errors >= 5:
-            return self._fail("local circuit breaker open (5+ consecutive errors)")
+        # Circuit breaker: too many recent errors/timeouts → skip local for
+        # the cooldown window. is_available() already enforces this, but we
+        # double-check here in case of a race.
+        if self._consecutive_errors >= self.CIRCUIT_ERROR_THRESHOLD:
+            import time
+            if time.time() < self._circuit_open_until:
+                return self._fail(
+                    f"local circuit breaker open "
+                    f"({self._consecutive_errors} consecutive errors, "
+                    f"cooldown until {int(self._circuit_open_until - time.time())}s)"
+                )
 
         # ── Wait for any in-flight generation to finish (prevents segfault) ──
         # A previous caller may have been cancelled by wait_for but its
