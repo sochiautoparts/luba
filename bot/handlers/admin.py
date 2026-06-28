@@ -1,15 +1,14 @@
 """Admin handler for Lyuba — owner-only commands."""
 
 import logging
-import time
 
-from aiogram import Router, F, types
+from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from bot.config import config, persona
+from bot.config import config
 from bot import database as db
-from ai.router import ai_router
+from ai import ai as ai_client
 
 logger = logging.getLogger("luba.admin")
 
@@ -24,14 +23,15 @@ def _is_owner(message: Message) -> bool:
 async def cmd_stats(message: Message):
     if not _is_owner(message):
         return
-    stats = ai_router.stats()
+    stats = ai_client.stats()
     await message.answer(
-        f"📊 Статистика Любы:\n"
+        f"📊 Статистика Любы v2.0:\n"
         f"Всего запросов: {stats['total']}\n"
-        f"Локальная модель: {stats['local']}\n"
-        f"Облако: {stats['cloud']}\n"
+        f"HuggingFace (primary): {stats['huggingface']} (errors: {stats['hf_errors']})\n"
+        f"Pollinations (backup): {stats['pollinations']} (errors: {stats['poll_errors']})\n"
         f"Статический фолбэк: {stats['static']}\n"
-        f"Локальная модель загружена: {ai_router._local._model_loaded}"
+        f"HF circuit open: {stats['hf_circuit_open']}\n"
+        f"Poll circuit open: {stats['poll_circuit_open']}"
     )
 
 

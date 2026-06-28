@@ -29,7 +29,7 @@ from bot import database as db
 from bot.config import config
 from bot.mood import current_mood_descriptor
 from bot.context import recent_messages_to_text
-from ai.router import ai_router
+from ai import ai as ai_client
 from bot.safe_send import safe_send
 
 logger = logging.getLogger("luba.proactive")
@@ -134,25 +134,24 @@ async def _check_and_start_topic(chat_id: int) -> None:
         )
 
         extra_ctx = (
-            f"ГДЕ: группа.\n"
-            f"ЗАДАЧА: инициировать беседу после тишины.\n"
-            f"Настроение: {mood}.\n"
-            f"НЕДАВНИЙ КОНТЕКСТ (если есть):\n{recent_text}\n"
+            f"Ты в группе. Иницируешь беседу после тишины. "
+            f"Настроение: {mood}. "
+            f"Недавний контекст (если есть):\n{recent_text}\n"
             f"Будь естественной, не формальной. Цель — вовлечь людей в разговор."
         )
 
         try:
-            resp = await asyncio.wait_for(
-                ai_router.comment(prompt, extra_context=extra_ctx, mood=mood, route_type="comment"),
-                timeout=30.0,
+            text = await asyncio.wait_for(
+                ai_client.comment(prompt, extra_context=extra_ctx, mood=mood),
+                timeout=20.0,
             )
         except asyncio.TimeoutError:
             return
 
-        if not resp.ok or not resp.text:
+        if not text:
             return
 
-        text = resp.text.strip()[:config.GROUP_MAX_CHARS]
+        text = text.strip()[:config.GROUP_MAX_CHARS]
         if not text:
             return
 

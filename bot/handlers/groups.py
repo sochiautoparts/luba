@@ -29,7 +29,7 @@ from aiogram import Router, F, types
 from aiogram.types import Message
 from aiogram.enums import ChatAction
 
-from bot.config import config, persona
+from bot.config import config
 from bot import database as db
 from bot.context import (
     user_descriptor, chat_descriptor, is_directed_at_lyuba,
@@ -39,7 +39,7 @@ from bot.mood import update_mood_from_message, current_mood_descriptor
 from bot.media_handler import extract_caption
 from bot.partners import partner_manager
 from bot.web_search import verify_claim
-from ai.router import ai_router
+from ai import ai as ai_client
 
 logger = logging.getLogger("luba.groups")
 
@@ -179,20 +179,17 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     try:
         links = partner_manager.get_all_partner_links_for_dialog(text, max_programs=2)
         if links:
-            extra_ctx += (
-                "\n\nПАРТНЁРСКИЕ ССЫЛКИ (вставь ОДНУ если к месту в беседе, естественно, не в каждом ответе):\n"
-            )
+            extra_ctx += "\n\nПартнёрские ссылки (вставь ОДНУ если к месту, естественно, не в каждом ответе):\n"
             for pl in links:
                 extra_ctx += f"- {pl['name']} ({pl.get('label','')}): {pl['url']}\n"
-            extra_ctx += "Не рекламируй в лоб — предложи как вариант если тема подходит."
     except Exception as e:
         logger.debug(f"partner links error: {e}")
 
-    # Channel + site recommendations (always in context, but Lyuba uses sparingly)
+    # Рекомендации обычным текстом, без меток — ничего не утекает
     extra_ctx += (
-        "\n\nРЕКОМЕНДАЦИИ (только если к месту, ~1 из 6 сообщений):\n"
-        "- Каналы: https://t.me/sochiautoparts (авто-новости), https://t.me/bmw_mpower_club (BMW клуб)\n"
-        "- Магазин: https://sochiautoparts.ru/shop | Статьи: https://sochiautoparts.ru"
+        "\n\nМожешь иногда (1 из 6 сообщений, если к месту) посоветовать каналы "
+        "@sochiautoparts (авто-новости) или @bmw_mpower_club (BMW клуб), "
+        "или магазин sochiautoparts.ru/shop."
     )
 
     # Include a real product / post from the site for context — higher probability
@@ -209,18 +206,14 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
 
         if random.random() < product_prob:
             from bot import site_content as sc
-            # Try relevant product first (matches keywords), fall back to random
             prod = await sc.relevant_product(text) if text else await sc.random_product()
             if prod:
-                extra_ctx += (
-                    "\n\nТОВАР ИЗ МАГАЗИНА sochiautoparts.ru/shop (упомяни если к месту, "
-                    "не навязывай):\n" + sc.format_product_for_context(prod)
-                )
+                extra_ctx += "\n\nТовар из магазина sochiautoparts.ru/shop (упомяни если к месту):\n" + sc.format_product_for_context(prod)
         if random.random() < post_prob:
             from bot import site_content as sc
             post = await sc.random_post()
             if post:
-                extra_ctx += "\n\nСВЕЖИЙ ПОСТ НА САЙТЕ (можешь поделиться если уместно): " + sc.format_post_for_context(post)
+                extra_ctx += "\n\nСвежий пост на сайте (можешь поделиться): " + sc.format_post_for_context(post)
     except Exception as e:
         logger.debug(f"site content error: {e}")
 
@@ -266,14 +259,14 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
         )
 
     try:
-        resp = await asyncio.wait_for(
-            ai_router.comment(prompt, extra_context=extra_ctx, mood=mood, route_type="comment"),
-            timeout=45.0,
+        out = await asyncio.wait_for(
+            ai_client.comment(prompt, extra_context=extra_ctx, mood=mood),
+            timeout=20.0,
         )
     except asyncio.TimeoutError:
         return ""
 
-    out = resp.text or ""
+    out = out or ""
 
     # Allow slightly longer replies for directed group messages
     limit = config.GROUP_MAX_CHARS if directed else config.COMMENT_MAX_CHARS

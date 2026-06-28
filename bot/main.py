@@ -1,18 +1,13 @@
 """
-Люба Bot — Main Entry Point (@asluba_bot)
+Люба Bot v2.0 — Main Entry Point (@asluba_bot).
 
-Features:
-- aiogram 3.x Telegram bot framework
-- LOCAL-FIRST AI: RuadaptQwen3-4B (CPU, like Asya) + Pollinations free + optional cloud providers
-- Active in groups (responds to all, proactive comments) — requires Privacy Mode OFF
-- Comments on channel posts
-- Private 1-on-1 chats with memory
-- Dynamic mood system, time/space awareness, world knowledge
-- Web verification of claims (DDG-based)
-- Affiliate programs from sochiautoparts.ru/partners.json
-- Image understanding (vision via Pollinations free)
-- SQLite (aiosqlite) persistence, WAL mode
-- GitHub Actions 24/7 via self-dispatch
+Перепроектировано для максимальной производительности и стабильности:
+
+  - НЕТ локальной модели → старт за ~30с (вместо 3-5 мин на компиляцию llama-cpp)
+  - AI: HuggingFace Qwen2.5-7B (0.8с) → Pollinations free (backup)
+  - Singleton httpx client с connection pooling
+  - Circuit breaker для каждого провайдера
+  - aiogram 3.x, SQLite (aiosqlite), GitHub Actions 24/7
 """
 
 import asyncio
@@ -29,9 +24,9 @@ from bot import database as db
 from bot.partners import partner_manager
 from bot.mood import mood_loop, current_mood_descriptor
 from bot import site_content as site_content
-from ai.router import ai_router
+from ai import ai as ai_client
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -42,7 +37,7 @@ for noisy in ["aiogram.event", "httpx", "httpcore", "aiosqlite"]:
     logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-# ── Routers ───────────────────────────────────────────────────────────────────
+# ── Routers ──────────────────────────────────────────────────────────────────
 from bot.handlers.chat import chat_router
 from bot.handlers.groups import group_router
 from bot.handlers.channels import channel_router
@@ -55,37 +50,42 @@ class LyubaBot:
             raise RuntimeError("BOT_TOKEN not set")
         self.bot = Bot(
             token=config.BOT_TOKEN,
-            default=DefaultBotProperties(parse_mode=None),  # plain text — Lyuba writes plain Russian
+            default=DefaultBotProperties(parse_mode=None),  # plain text
         )
         self.dp = Dispatcher(storage=MemoryStorage())
-        # Order matters: admin first, then chat (private), groups, channels
+        # Order: admin → chat (private) → groups → channels
         self.dp.include_router(admin_router)
         self.dp.include_router(chat_router)
         self.dp.include_router(group_router)
         self.dp.include_router(channel_router)
         self._stop = asyncio.Event()
 
-        # Register error handler — log exceptions but NEVER crash the bot.
-        # This catches RetryAfter, network errors, handler bugs, etc. and
-        # keeps polling alive.
+        # Error handler — логируем но НЕ крашим бота
         from aiogram.types import ErrorEvent
+
         @self.dp.error()
         async def on_error(event: ErrorEvent):
             try:
                 exc = event.exception
-                # TelegramRetryAfter is expected during flood — log quietly
                 from aiogram.exceptions import TelegramRetryAfter
                 if isinstance(exc, TelegramRetryAfter):
-                    logger.warning(f"Flood control (RetryAfter {exc.retry_after}s) — handled, bot continues")
+                    logger.warning(
+                        f"Flood control (RetryAfter {exc.retry_after}s) — handled"
+                    )
                 else:
-                    logger.error(f"Handler error (suppressed): {type(exc).__name__}: {exc}", exc_info=False)
+                    logger.error(
+                        f"Handler error (suppressed): {type(exc).__name__}: {exc}",
+                        exc_info=False,
+                    )
             except Exception:
                 pass
-            # Return None so aiogram doesn't propagate/crash
 
     async def start(self) -> None:
-        logger.info("=== Люба Bot стартует ===")
-        logger.info(f"Bot: {config.BOT_USERNAME} (id={config.BOT_ID}), owner={config.OWNER_ID}")
+        logger.info("=== Люба Bot v2.0 стартует ===")
+        logger.info(
+            f"Bot: {config.BOT_USERNAME} (id={config.BOT_ID}), "
+            f"owner={config.OWNER_ID}"
+        )
 
         # Init DB
         await db.init_db()
@@ -98,25 +98,25 @@ class LyubaBot:
         except Exception as e:
             logger.warning(f"Partner load failed (non-fatal): {e}")
 
-        # Init site content (products + posts from sochiautoparts.ru)
+        # Init site content
         try:
             await site_content.init_site_content()
-            logger.info(f"Site content: {len(site_content._product_cache)} products, "
-                        f"{len(site_content._post_cache)} posts cached")
+            logger.info(
+                f"Site content: {len(site_content._product_cache)} products, "
+                f"{len(site_content._post_cache)} posts cached"
+            )
         except Exception as e:
             logger.warning(f"Site content load failed (non-fatal): {e}")
 
-        # Init AI router (loads local model)
-        try:
-            await ai_router.initialize()
-        except Exception as e:
-            logger.error(f"AI router init error (will use cloud fallback): {e}")
+        # Init AI client (singleton httpx — мгновенно, без загрузки модели)
+        await ai_client.initialize()
+        logger.info(f"AI client ready — {config.providers_status()}")
 
         # Background tasks
         asyncio.create_task(mood_loop(), name="mood_loop")
         asyncio.create_task(db.run_periodic_cleanup(), name="cleanup_loop")
         asyncio.create_task(self._site_refresh_loop(), name="site_refresh")
-        # Proactive topic starter — Lyuba initiates conversations in silent groups
+        # Proactive topic starter
         try:
             from bot.proactive import proactive_loop, set_bot
             set_bot(self.bot)
@@ -125,7 +125,7 @@ class LyubaBot:
         except Exception as e:
             logger.warning(f"Proactive loop failed to start (non-fatal): {e}")
 
-        # Notify owner that bot is alive
+        # Notify owner
         await self._notify_owner()
 
         # Delete webhook & start polling
@@ -134,62 +134,55 @@ class LyubaBot:
         except Exception as e:
             logger.warning(f"delete_webhook: {e}")
 
-        # Allowed updates: include channel_post for channel commenting
         allowed = ["message", "edited_message", "channel_post", "edited_channel_post"]
-
         logger.info("=== Люба в сети — слушаю сообщения ===")
-        # Robust polling wrapper: aiogram's start_polling already retries on
-        # transient network errors (Connection reset by peer, timeouts), but
-        # as a safety net we wrap it in an outer loop so the bot NEVER exits
-        # due to a polling failure. The workflow's `set +e` + restart loop
-        # is the last line of defense.
+
+        # Robust polling: aiogram retries internally, но как safety net — outer loop
         polling_retries = 0
         while True:
             try:
                 await self.dp.start_polling(self.bot, allowed_updates=allowed)
-                # If start_polling returns normally (e.g. stop_polling called), exit
                 break
             except Exception as e:
                 polling_retries += 1
-                # Network errors are transient (Connection reset by peer, DNS hiccup,
-                # Telegram API temporary unavailable). aiogram handles most internally,
-                # but if it bubbles up, we retry with backoff.
-                logger.error(f"Polling error (attempt {polling_retries}): {type(e).__name__}: {e}")
+                logger.error(
+                    f"Polling error (attempt {polling_retries}): "
+                    f"{type(e).__name__}: {e}"
+                )
                 if polling_retries > 50:
-                    logger.error("Too many polling retries (50+) — exiting to let workflow restart")
+                    logger.error("Too many polling retries — exiting")
                     break
-                # Backoff: 5s for first few, 10s after that
                 wait = 5 if polling_retries <= 5 else 10
                 logger.warning(f"Retrying polling in {wait}s...")
                 await asyncio.sleep(wait)
+
         # Cleanup
         try:
-            await ai_router.close()
+            await ai_client.close()
         except Exception:
             pass
 
     async def _notify_owner(self) -> None:
-        """Send a startup greeting to the owner so they know Lyuba is alive."""
+        """Startup greeting to owner."""
         mood = await current_mood_descriptor()
+        stats = ai_client.stats()
         try:
             await self.bot.send_message(
                 config.OWNER_ID,
                 f"я на связи 😊 сейчас я {mood}. "
-                f"локальная модель: {'✅ загружена' if ai_router._local._model_loaded else '❌ недоступна (работаю на облаке)'}, "
-                f"опциональные провайдеры: {config.optional_providers() or 'нет'}. "
+                f"провайдеры: {config.providers_status()}. "
                 f"партнёров: {len(partner_manager.campaigns)}, "
-                f"товаров сайта: {len(site_content._product_cache)}, "
+                f"товаров: {len(site_content._product_cache)}, "
                 f"постов: {len(site_content._post_cache)}. "
-                f"пиши мне в личку или добавь в группу — буду общаться 💬"
+                f"пиши в личку или добавь в группу 💬"
             )
         except Exception as e:
             logger.warning(f"Could not notify owner: {e}")
 
     async def _site_refresh_loop(self) -> None:
         """Periodically refresh site products + posts (every hour)."""
-        import asyncio as _a
         while True:
-            await _a.sleep(3600)
+            await asyncio.sleep(3600)
             try:
                 await site_content.refresh_products(force=True)
                 await site_content.refresh_posts(force=True)
