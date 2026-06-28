@@ -256,27 +256,39 @@ class AIClient:
         """Primary (HF) → Backup (Pollinations) → Static. Без fan-out."""
         # Primary: HuggingFace Qwen2.5-7B
         if config.HF_TOKEN and self._hf.ok():
-            text = await self._hf_chat(messages, max_tokens)
+            text, status = await self._hf_chat(messages, max_tokens)
             if text:
                 self._hf.success()
                 self._hf_ok += 1
+                logger.info(f"AI: HF answered ({len(text)} chars)")
                 return clean_response(text)
             self._hf.fail()
+            logger.warning(f"AI: HF failed (HTTP {status}) — falling back to Pollinations")
+        elif not config.HF_TOKEN:
+            logger.warning("AI: HF skipped (no HF_TOKEN in secrets) — using Pollinations only")
+        elif not self._hf.ok():
+            logger.info(f"AI: HF circuit open (errors={self._hf.errors}) — using Pollinations")
         # Backup: Pollinations openai (free)
         if self._poll.ok():
-            text = await self._poll_chat(messages, max_tokens)
+            text, status = await self._poll_chat(messages, max_tokens)
             if text:
                 self._poll.success()
                 self._poll_ok += 1
+                logger.info(f"AI: Pollinations answered ({len(text)} chars)")
                 return clean_response(text)
             self._poll.fail()
+            logger.warning(f"AI: Pollinations failed (HTTP {status}) — static fallback")
+        elif not self._poll.ok():
+            logger.warning(f"AI: Pollinations circuit open (errors={self._poll.errors})")
         # Static fallback
         self._static += 1
+        logger.warning("AI: all providers failed — static fallback")
         return ""
 
     # ── HuggingFace (primary) ──
 
-    async def _hf_chat(self, messages: list, max_tokens: int) -> Optional[str]:
+    async def _hf_chat(self, messages: list, max_tokens: int):
+        """Returns (text, http_status). text=None on failure."""
         try:
             resp = await self._http.post(
                 "https://router.huggingface.co/v1/chat/completions",
@@ -289,24 +301,26 @@ class AIClient:
                 headers={"Authorization": f"Bearer {config.HF_TOKEN}"},
             )
             if resp.status_code != 200:
-                logger.debug(f"HF chat HTTP {resp.status_code}: {resp.text[:150]}")
-                return None
+                # 401 = невалидный/истёкший HF_TOKEN — частая причина
+                body = resp.text[:200] if resp.status_code in (401, 403, 429) else resp.text[:80]
+                logger.warning(f"HF chat HTTP {resp.status_code}: {body}")
+                return None, resp.status_code
             data = resp.json()
             choices = data.get("choices", [])
             if not choices:
-                return None
+                return None, 200
             text = choices[0].get("message", {}).get("content", "") or ""
             text = text.strip()
             if not text:
-                return None
+                return None, 200
             # Отбраковка CJK/Arabic галлюцинаций (Qwen2.5 иногда выдает китайский)
             if contains_non_cyrillic_script(text):
-                logger.debug("HF response rejected: non-Cyrillic script (hallucination)")
-                return None
-            return text
+                logger.warning("HF response rejected: non-Cyrillic script (hallucination)")
+                return None, 200
+            return text, 200
         except Exception as e:
-            logger.debug(f"HF chat exception: {e}")
-            return None
+            logger.warning(f"HF chat exception: {type(e).__name__}: {e}")
+            return None, 0
 
     async def _hf_vision(self, image_url: str, prompt: str,
                          system_prompt: str) -> Optional[str]:
@@ -343,11 +357,8 @@ class AIClient:
 
     # ── Pollinations (backup, free, no auth) ──
 
-    async def _poll_chat(self, messages: list, max_tokens: int) -> Optional[str]:
-        """Pollinations POST /openai — OpenAI-совместимый JSON endpoint.
-
-        Только POST (GET endpoint встраивает промт в URL и модель эхирует его).
-        """
+    async def _poll_chat(self, messages: list, max_tokens: int):
+        """Pollinations POST /openai. Returns (text, http_status)."""
         try:
             resp = await self._http.post(
                 "https://text.pollinations.ai/openai",
@@ -362,23 +373,22 @@ class AIClient:
                 timeout=20.0,
             )
             if resp.status_code == 429:
-                # Rate-limited — это ожидаемо для free tier
-                logger.debug("Pollinations 429 (rate-limited)")
-                return None
+                logger.warning("Pollinations 429 (rate-limited on free tier)")
+                return None, 429
             if resp.status_code != 200:
-                logger.debug(f"Pollinations chat HTTP {resp.status_code}")
-                return None
+                logger.warning(f"Pollinations chat HTTP {resp.status_code}: {resp.text[:100]}")
+                return None, resp.status_code
             data = resp.json()
             choices = data.get("choices", [])
             if not choices:
-                return None
+                return None, 200
             msg = choices[0].get("message", {})
             text = (msg.get("content", "") if isinstance(msg, dict) else "") or ""
             text = text.strip()
-            return text or None
+            return (text or None), 200
         except Exception as e:
-            logger.debug(f"Pollinations chat exception: {e}")
-            return None
+            logger.warning(f"Pollinations chat exception: {type(e).__name__}: {e}")
+            return None, 0
 
     async def _poll_vision(self, image_url: str, prompt: str,
                            system_prompt: str) -> Optional[str]:

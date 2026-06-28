@@ -403,6 +403,14 @@ async def handle_group_text(message: Message):
     if not text:
         return
 
+    # Diagnostic: log that we received a group message (helps debug "no activity")
+    directed_early = is_directed_at_lyuba(message)
+    logger.info(
+        f"GROUP MSG chat={message.chat.id} ({message.chat.title or '?'}) "
+        f"user={u.first_name} ({u.id}) bot={u.is_bot} directed={directed_early} "
+        f"text={text[:60]!r}"
+    )
+
     # Log the message
     await _log_group_message(message, content=text, is_media=False, is_bot=False)
     await update_mood_from_message(text)
@@ -416,17 +424,18 @@ async def handle_group_text(message: Message):
         pass
 
     # Skip commands (unless directed at Lyuba)
-    if text.startswith("/") and not is_directed_at_lyuba(message):
+    if text.startswith("/") and not directed_early:
         return
 
     # Avoid politics/war — stay quiet
-    if _is_politics_or_war(text) and not is_directed_at_lyuba(message):
+    if _is_politics_or_war(text) and not directed_early:
         return
 
     if not await _should_respond(message):
+        logger.info(f"GROUP SKIP (not responding) chat={message.chat.id}")
         return
 
-    directed = is_directed_at_lyuba(message)
+    directed = directed_early
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     try:
         out = await _generate_group_response(message, text, directed)
@@ -434,7 +443,9 @@ async def handle_group_text(message: Message):
         logger.error(f"group text response error: {e}")
         return
     if not out:
+        logger.warning(f"GROUP NO RESPONSE GENERATED chat={message.chat.id}")
         return
+    logger.info(f"GROUP REPLY chat={message.chat.id} len={len(out)} text={out[:60]!r}")
     # ALWAYS reply (thread) to the user's message — so it's clear WHO Lyuba
     # is answering. priority=True for directed messages (higher rate-limit cap,
     # never silently dropped).
