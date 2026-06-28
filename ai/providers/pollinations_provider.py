@@ -65,31 +65,33 @@ class PollinationsProvider(BaseAIProvider):
     def _build_get_prompt(self, messages: List[Dict[str, str]]) -> str:
         """Flatten messages into a single prompt for the GET endpoint.
 
-        The GET endpoint takes a raw prompt string, so we embed a COMPACT role
-        cue + conversation. We do NOT send the full system prompt (it's ~5KB
-        and would bloat the URL + slow down generation). Instead, a one-line
-        role reminder is enough — the model already knows Lyuba from training
-        cues in the conversation.
+        The GET endpoint takes a raw prompt string, so the model sees everything
+        as one blob and tends to ECHO instruction text back. To avoid prompt
+        leakage we use a COMPACT, fixed persona cue instead of slicing the full
+        multi-KB system prompt (which contains leaky labels like ДЛИНА:, ГДЕ:,
+        РЕКОМЕНДАЦИИ, 🔴 …). The full rich persona is delivered properly via
+        the POST endpoint's `system` role, so GET only needs a clean reminder.
+
+        Conversation history uses explicit "Люба:" / "Собеседник:" role labels
+        so the model understands the thread; these labels are stripped from the
+        final answer by `clean_ai_response` in the router.
         """
-        parts = []
-        sys_added = False
+        # Fixed compact cue — does NOT contain instruction labels that leak.
+        CUE = ("Ты Люба — живая девушка 28 лет из Сочи. Общайся живым русским, "
+               "коротко, без markdown, как знакомая. Без политики и войны.")
+        parts = [CUE]
         for m in messages:
             role = m.get("role", "user")
             content = m.get("content", "")
             if not content:
                 continue
             if role == "system":
-                # Use only the first 400 chars of system prompt as a cue
-                # (the full prompt is too long for a GET URL)
-                cue = content[:400]
-                parts.append(f"Ты Люба — живая девушка из Сочи, общайся живо и коротко. {cue}")
-                sys_added = True
+                # Skip the full system prompt for GET — it leaks. CUE above is enough.
+                continue
             elif role == "assistant":
                 parts.append(f"Люба: {content}")
             else:
                 parts.append(f"Собеседник: {content}")
-        if not sys_added:
-            parts.insert(0, "Ты Люба — живая девушка из Сочи, общайся живо и коротко.")
         parts.append("Люба:")  # cue the model to answer as Lyuba
         return "\n".join(parts)
 

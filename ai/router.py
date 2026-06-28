@@ -79,25 +79,135 @@ def _season(month: int) -> str:
 # ── Response cleaner ──────────────────────────────────────────────────────────
 
 def clean_ai_response(text: str) -> str:
+    """Clean an AI response: strip prompt leakage, formatting artifacts, and echoes.
+
+    This is the SINGLE chokepoint for prompt-leakage defense. Models (especially
+    the local 4B and Pollinations free GPT-OSS) sometimes echo fragments of the
+    system/user prompt back into their answer. We strip:
+      - <think> tags and stray ChatML tokens
+      - Name prefixes (Люба:, Assistant:, Собеседник:, …) — at start AND per-line
+      - Markdown bold/italic/headers and HTML tags
+      - Leaked instruction/context lines (ДЛИНА:, ГДЕ:, КТО ПИШЕТ:, РЕКОМЕНДАЦИИ,
+        ПАРТНЁРСКИЕ ССЫЛКИ, ТОВАР ИЗ МАГАЗИНА, 🔴 …, Вступи в беседу…, etc.)
+      - Leading instruction phrases the group handler prepends to the prompt
+    """
     if not text:
         return ""
     # Strip think tags
     text = re.sub(r'<think\b[^>]*>.*?</think\s*>', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'</?think[^>]*>', '', text, flags=re.IGNORECASE)
-    # Strip prefixes
-    for prefix in ["Люба:", "Lyuba:", "ЛЮБА:", "Assistant:", "Ответ:", "Ассистент:"]:
+    # Strip stray ChatML tokens (local model can leak them)
+    for tok in ["<|im_end|>", "<|im_start|>"]:
+        text = text.replace(tok, "")
+    # Strip leading name prefixes
+    for prefix in ["Люба:", "Lyuba:", "ЛЮБА:", "Assistant:", "Ответ:", "Ассистент:",
+                   "Собеседник:", "User:", "Model:"]:
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
-    # Strip quotes
-    if len(text) > 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+    # Strip wrapping quotes (straight + curly)
+    if len(text) > 2 and text[0] == text[-1] and text[0] in ('"', '"', '"', "'", "«", "»"):
         text = text[1:-1]
     # Strip markdown
     text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
     text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'<[^>]+>', '', text)
-    # Whitespace
+
+    # ── Prompt-leakage defense: strip echoed instruction/context lines ──
+    # These are labels/headers from the system prompt & context builder that a
+    # natural Lyuba reply would NEVER start a line with. Dropping them removes
+    # the "часть промтов в ответы попадает" effect without touching real speech.
+    leak_line_patterns = [
+        r'^ДЛИНА\s*[:：]',
+        r'^Ты Люба\b',
+        r'^Люба\s+—',
+        r'^Сейчас\s.+\sпо\sМоскве',
+        r'^День\s+недели\s*[:：]',
+        r'^Время\s+суток\s*[:：]',
+        r'^Сезон\s*[:：]',
+        r'^Настроение\s*[:：]',
+        r'^Текущее\s+настроение',
+        r'^ГДЕ\s*[:：]',
+        r'^КТО\s+ПИШЕТ\s*[:：]',
+        r'^НА\s+ЧТО\s+ОТВЕЧАЮТ',
+        r'^ПРОТЕЖКА\s*[:：]',
+        r'^ОБРАЩЕНИЕ\s*[:：]',
+        r'^НЕДАВНИЕ\s+СООБЩЕНИЯ',
+        r'^ЧТО\s+ТЫ\s+ПОМНИШЬ',
+        r'^ЗАДАЧА\s*[:：]',
+        r'^АВТОР\s+ПОСТА\s*[:：]',
+        r'^РЕКОМЕНДАЦИИ',
+        r'^ПАРТН[ЁЕ]РСКИЕ\s+ССЫЛКИ',
+        r'^ТОВАР\s+ИЗ\s+МАГАЗИНА',
+        r'^СВЕЖИЙ\s+ПОСТ',
+        r'^РЕЗУЛЬТАТЫ\s+ВЕБ[-\s]ПОИСКА',
+        r'^КЛЮЧЕВЫЕ\s+ЗНАНИЯ',
+        r'^О\s+ТЕБЕ\b',
+        r'^ЧЕЛОВЕЧЕСКИЕ\s+РЕАКЦИИ',
+        r'^СТИЛЬ\s*[:：]',
+        r'^ЗАПРЕТ\s*[:：]',
+        r'^ССЫЛКИ\s+И\s+ПАРТН[ЁЕ]РЫ',
+        r'^ВРЕМЯ\s*[:：]',
+        r'^ПАМЯТЬ\s+И\s+КОНТЕКСТ',
+        r'^ФОТО\s+И\s+ИЗОБРАЖЕНИЯ',
+        # Group prompt instruction echoes (groups.py prepends these to the user msg)
+        r'^В\s+группе\s+поделились',
+        r'^Вступ[аиій]\s+в\s+беседу',   # Вступи / Вступай / Вступій
+        r'^Тебе\s+пишут\s+напрямую',
+        r'^Отреагируй\s+живо',
+        r'^Ответь\s+живо',
+        r'^Обратись?\s+к\s+автору',
+        r'^Обратись?\s+по\s+имени',
+        r'^Ответь\s+участнику',
+        r'^Поделись\s+своим\s+мнением',
+        r'^Задай\s+вопрос',
+        r'^Прокомментируй\s+это\s+сообщение',
+        # Persona section markers
+        r'^🔴',
+    ]
+    leak_re = re.compile('|'.join(leak_line_patterns), re.IGNORECASE)
+    lines = text.split("\n")
+    kept = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped and leak_re.match(stripped):
+            # Drop this leaked line AND any immediately-following continuation
+            # lines (bullets / dash lines) that belong to the same leaked block.
+            # This handles multi-line echoes like:
+            #   РЕКОМЕНДАЦИИ (...):
+            #   - Каналы: https://...
+            #   - Магазин: https://...
+            i += 1
+            while i < len(lines):
+                cont = lines[i].strip()
+                if not cont:
+                    break
+                if cont.startswith(("- ", "* ", "• ", "— ", "• ", "+ ")):
+                    i += 1
+                    continue
+                break
+            continue
+        # Strip inline role labels a model may prepend mid-response
+        line = re.sub(r'^(Собеседник|User|Люба|Lyuba|Assistant|Model)\s*[:：]\s*',
+                      '', lines[i])
+        kept.append(line)
+        i += 1
+    text = "\n".join(kept)
+
+    # Strip leading instruction phrases that may appear at the very start
+    for ph in (
+        "Вступи в беседу —", "Вступай в беседу —",
+        "Отреагируй живо —", "Тебе пишут напрямую.",
+        "В группе поделились событием/новостью.",
+    ):
+        if text.startswith(ph):
+            text = text[len(ph):].lstrip(" —.—")
+
+    # Whitespace cleanup
     text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'[ \t]{2,}', ' ', text)
     return text.strip()
 
 
