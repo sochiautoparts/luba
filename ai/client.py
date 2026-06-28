@@ -517,6 +517,11 @@ class AIClient:
         self._provider_ok: dict = {}
         self._static = 0
         self._cache_hits = 0
+        # Semaphore: сериализация AI-запросов (не больше 1 одновременно к
+        # одному провайдеру). Prevents 429 при параллельных сообщениях
+        # (например, когда Настя шлёт 2 поста подряд — бот не должен слать
+        # 2 запроса к Pollinations одновременно).
+        self._semaphore = asyncio.Semaphore(1)
 
     async def initialize(self) -> None:
         self._http = httpx.AsyncClient(
@@ -534,7 +539,8 @@ class AIClient:
             self._provider_ok[name] = 0
         logger.info(
             f"AI Client v2.2 ready — providers (priority): {names}. "
-            f"{config.providers_status()}"
+            f"{config.providers_status()}. "
+            f"Serialization: semaphore=1 (no parallel API calls)"
         )
 
     async def close(self) -> None:
@@ -614,53 +620,87 @@ class AIClient:
 
         return ""
 
-    # ── Core generation: linear failover with cache + retry ──
+    # ── Core generation: linear failover with cache + retry + queue ──
 
     async def _generate(self, messages: list, max_tokens: int, is_comment: bool = False) -> str:
-        """Linear failover по приоритету + кэш + retry для 429."""
-        # 1. Проверяем кэш (дедупликация идентичных запросов за 60с)
+        """Linear failover + кэш + semaphore (сериализация) + экспоненциальный retry.
+
+        Архитектура (почему нет 429 при параллельных сообщениях):
+          1. Semaphore(1) — только 1 AI-запрос к провайдеру одновременно.
+             Если Настя шлёт 2 поста подряд, второй запрос ждёт в очереди,
+             а не бьёт по API параллельно → нет 429.
+          2. Cache (60с TTL) — идентичные запросы не повторяются.
+          3. Экспоненциальный backoff для 429: 1с → 2с → 4с (3 попытки).
+          4. Linear failover: pollinations → pollinations_get → HF → ...
+          5. Если все провайдеры упали — smart fallback (контекстный).
+        """
+        # 1. Проверяем кэш (дедупликация)
         cached = await self._cache.get(messages)
         if cached is not None:
             self._cache_hits += 1
             logger.info(f"AI: cache HIT (saved API call)")
             return cached
 
-        # 2. Linear failover по провайдерам
+        # 2. Сериализация: ждём semaphore (не больше 1 запроса одновременно)
+        # Timeout 30с — если очередь длинная, лучше fallback чем вечное ожидание
+        try:
+            await asyncio.wait_for(self._semaphore.acquire(), timeout=30.0)
+        except asyncio.TimeoutError:
+            logger.warning("AI: semaphore queue timeout (30s) — smart fallback")
+            self._static += 1
+            last_user = self._last_user(messages)
+            return _smart_fallback(last_user, is_comment=is_comment)
+
+        try:
+            return await self._generate_inner(messages, max_tokens, is_comment)
+        finally:
+            self._semaphore.release()
+
+    def _last_user(self, messages: list) -> str:
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                return m.get("content", "")
+        return ""
+
+    async def _generate_inner(self, messages: list, max_tokens: int, is_comment: bool) -> str:
+        """Внутренняя логика failover (вызывается под semaphore)."""
+        # Экспоненциальный backoff для 429: [1с, 2с, 4с] = 3 попытки total
+        backoff_schedule = [1.0, 2.0, 4.0]
         tried = []
+
         for name, chat_fn, breaker in self._providers:
             if not breaker.ok():
                 tried.append(f"{name}(circuit-open)")
                 continue
             tried.append(name)
-            # Retry для 429 (rate limit) — 2 попытки с backoff
-            for attempt in range(2):
+
+            # 3 попытки с экспоненциальным backoff для 429
+            for attempt, wait in enumerate([0.0] + backoff_schedule):
+                if attempt > 0:
+                    logger.info(f"AI: {name} retry #{attempt} after {wait}s (429 backoff)")
+                    await asyncio.sleep(wait)
+
                 text, status = await chat_fn(self._http, messages, max_tokens)
                 if text:
                     breaker.success()
                     self._provider_ok[name] = self._provider_ok.get(name, 0) + 1
-                    logger.info(f"AI: {name} answered ({len(text)} chars)")
-                    # Кэшируем успешный ответ
+                    logger.info(f"AI: {name} answered ({len(text)} chars, attempt {attempt+1})")
                     await self._cache.set(messages, text)
                     return clean_response(text)
-                if status == 429 and attempt == 0:
-                    # Rate-limited — подождём 1с и retry
-                    logger.info(f"AI: {name} 429 — retry in 1s")
-                    await asyncio.sleep(1.0)
+
+                # 429 = rate-limited — ретраим с backoff (если есть попытки)
+                if status == 429 and attempt < len(backoff_schedule):
                     continue
-                break  # другая ошибка — не ретраим
+                # Другая ошибка (500, timeout, etc) — не ретраим, след провайдер
+                break
+
             breaker.fail()
             logger.warning(f"AI: {name} failed (HTTP {status}) — trying next provider")
 
-        # 3. Все провайдеры упали — умный статический fallback
+        # Все провайдеры упали — smart fallback
         self._static += 1
         logger.error(f"AI: ALL providers failed — tried: {tried} — smart fallback")
-        # Для fallback используем последний user message
-        last_user = ""
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                last_user = m.get("content", "")
-                break
-        return _smart_fallback(last_user, is_comment=is_comment)
+        return _smart_fallback(self._last_user(messages), is_comment=is_comment)
 
     # ── Vision implementations ──
 
