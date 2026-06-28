@@ -25,8 +25,9 @@ async def cmd_stats(message: Message):
         return
     stats = ai_client.stats()
     lines = [
-        f"📊 Статистика Любы v2.1:",
+        f"📊 Статистика Любы v2.2:",
         f"Всего запросов: {stats['total']}",
+        f"Кэш hits (сэкономлено API): {stats['cache_hits']}",
         f"Статический фолбэк: {stats['static']}",
         "",
         "Провайдеры (по приоритету):",
@@ -34,7 +35,7 @@ async def cmd_stats(message: Message):
     for name, pstats in stats["providers"].items():
         circuit = "🔴 OPEN" if pstats["circuit_open"] else "🟢 OK"
         lines.append(
-            f"  {name:12} | ok={pstats['ok']:4} | errors={pstats['errors']} | {circuit}"
+            f"  {name:16} | ok={pstats['ok']:4} | errors={pstats['errors']} | {circuit}"
         )
     await message.answer("\n".join(lines))
 

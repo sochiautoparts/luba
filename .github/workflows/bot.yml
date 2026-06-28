@@ -130,7 +130,7 @@ jobs:
             sed -i '/luba\.db/d' .gitignore
           fi
 
-      - name: Run Lyuba Bot v2.1
+      - name: Run Lyuba Bot v2.2
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           BOT_USERNAME: "@asluba_bot"
@@ -167,10 +167,10 @@ jobs:
           LOG_LEVEL: INFO
         run: |
           set +e  # disable exit-on-error so retry loop survives any crash
-          echo "=== Starting Lyuba Bot v2.1 ==="
-          echo "MULTI-PROVIDER: Groq → Gemini → Pollinations → OpenRouter → HF → Cloudflare"
-          echo "Auto-detect: only providers with API keys are active"
-          echo "Pollinations always available (free, no auth)"
+          echo "=== Starting Lyuba Bot v2.2 ==="
+          echo "MULTI-PROVIDER: Groq → Gemini → Pollinations(POST) → Pollinations(GET) → OpenRouter → HF → Cloudflare"
+          echo "Pollinations PRIMARY (free, no auth, ~0.3s, GPT-OSS 20B with reasoning)"
+          echo "Cache: 60s TTL for deduplication | Retry: 429 backoff | Circuit breaker per provider"
           echo "=== Launching with UNLIMITED auto-restart ==="
           RETRY=0
           LAST_START=0
