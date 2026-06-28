@@ -565,10 +565,11 @@ class AIClient:
     async def chat(self, user_id: int, message: str,
                    extra_context: str = "", mood: str = "",
                    max_chars: int = None) -> str:
-        """Личный чат: с историей диалога."""
+        """Личный чат: с историей диалога (12 последних сообщений)."""
         self._total += 1
         sys_prompt = self._build_system(extra_context, mood)
-        history = await db.get_chat_history(user_id, limit=8)
+        # 12 сообщений истории (было 8) — даёт больше контекста для памяти
+        history = await db.get_chat_history(user_id, limit=12)
 
         messages = [{"role": "system", "content": sys_prompt}]
         for h in history:
@@ -584,14 +585,28 @@ class AIClient:
         return text[:cap] if text else _smart_fallback(message, is_comment=False)
 
     async def comment(self, prompt: str, extra_context: str = "",
-                      mood: str = "", max_chars: int = None) -> str:
-        """Комментарий в группе/канале: без истории, короче."""
+                      mood: str = "", max_chars: int = None,
+                      dialog_history: list = None) -> str:
+        """Комментарий в группе/канале.
+
+        dialog_history: список недавних сообщений группы как proper dialog:
+          [{"role": "user", "content": "Иван: привет"}, ...]
+          [{"role": "assistant", "content": "Люба: привет, Иван!"}, ...]
+        Если передан — модель видит реальный диалог с role tags, а не просто
+        текст в extra_context. Это сильно улучшает понимание "кто что сказал".
+        """
         self._total += 1
         sys_prompt = self._build_system(extra_context, mood)
-        messages = [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": prompt[:2000]},
-        ]
+        messages = [{"role": "system", "content": sys_prompt}]
+        # Подмешиваем недавний диалог как proper messages (role: user/assistant)
+        if dialog_history:
+            for h in dialog_history[-10:]:  # последние 10 сообщений
+                role = h.get("role", "user")
+                content = h.get("content", "")[:500]
+                if content:
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": prompt[:2000]})
+
         text = await self._generate(messages, max_tokens=300, is_comment=True)
         cap = max_chars or config.COMMENT_MAX_CHARS
         return text[:cap] if text else _smart_fallback(prompt, is_comment=True)

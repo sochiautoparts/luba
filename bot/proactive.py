@@ -144,6 +144,20 @@ async def _check_and_start_topic(chat_id: int) -> None:
         recent_text = recent_messages_to_text(recent, limit=4)
         mood = await current_mood_descriptor()
 
+        # Build dialog_history — недавние сообщения как proper role-tagged dialog
+        # чтобы Lyuba помнила контекст беседы и не повторялась
+        dialog_history = []
+        for m in recent:
+            who = m.get("first_name") or m.get("username") or "кто-то"
+            if m.get("user_id") == config.BOT_ID:
+                role = "assistant"
+                content = m.get("content", "")
+            else:
+                role = "user"
+                content = f"{who}: {m.get('content', '')}"
+            if content.strip():
+                dialog_history.append({"role": role, "content": content})
+
         topic = random.choice(GENERAL_TOPICS)
         starter = random.choice(TOPIC_STARTERS)
 
@@ -173,7 +187,10 @@ async def _check_and_start_topic(chat_id: int) -> None:
 
         try:
             text = await asyncio.wait_for(
-                ai_client.comment(prompt, extra_context=extra_ctx, mood=mood),
+                ai_client.comment(
+                    prompt, extra_context=extra_ctx, mood=mood,
+                    dialog_history=dialog_history,
+                ),
                 timeout=40.0,
             )
         except asyncio.TimeoutError:

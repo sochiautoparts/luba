@@ -176,10 +176,10 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
     Vision is DISABLED in groups (resource saving) — group photos are handled
     by their caption text only.
     """
-    # Load recent context + memory
-    recent = await db.get_recent_group_messages(message.chat.id, limit=10)
+    # Load recent context + memory. 12 сообщений (было 10) — для dialog_history.
+    recent = await db.get_recent_group_messages(message.chat.id, limit=12)
     recent_text = recent_messages_to_text(recent, limit=8)
-    memory_facts_rows = await db.get_group_memory(message.chat.id, limit=6)
+    memory_facts_rows = await db.get_group_memory(message.chat.id, limit=8)
     memory_facts = [r["fact"] for r in memory_facts_rows]
 
     mood = await current_mood_descriptor()
@@ -276,9 +276,29 @@ async def _generate_group_response(message: Message, text: str, directed: bool) 
 
     # Timeout 40с: semaphore serialization + retry backoff (1+2+4=7с per provider)
     # может занять время при параллельных сообщениях. 40с даёт margin.
+    # Передаём dialog_history — недавние сообщения как proper role-tagged dialog,
+    # чтобы модель видела КТО что сказал (не просто текст в extra_context).
+    dialog_history = []
+    for m in recent:
+        who = m.get("first_name") or m.get("username") or "кто-то"
+        if m.get("user_id") == config.BOT_ID:
+            role = "assistant"
+            content = m.get("content", "")
+        else:
+            role = "user"
+            content = f"{who}: {m.get('content', '')}"
+            if m.get("is_media"):
+                cap = m.get("media_caption", "")
+                content = f"{who}: [фото{': ' + cap if cap else ''}]"
+        if content.strip():
+            dialog_history.append({"role": role, "content": content})
+
     try:
         out = await asyncio.wait_for(
-            ai_client.comment(prompt, extra_context=extra_ctx, mood=mood),
+            ai_client.comment(
+                prompt, extra_context=extra_ctx, mood=mood,
+                dialog_history=dialog_history,
+            ),
             timeout=40.0,
         )
     except asyncio.TimeoutError:
@@ -481,24 +501,44 @@ async def handle_group_text(message: Message):
 
 
 async def _extract_and_store_memory(message: Message, text: str):
-    """Extract personal facts from user messages and store in group_memory."""
+    """Extract personal facts from user messages and store in group_memory.
+
+    Lyuba remembers facts about users: city, work, pets, hobbies, family,
+    preferences, plans. These are injected into context for future replies
+    ("Иван живёт в Москве", "у Маши есть кот", etc.).
+    """
     if not text or not message.from_user:
         return
     t = text.lower().strip()
     user_id = message.from_user.id
     chat_id = message.chat.id
     name = message.from_user.first_name or ""
+    # Расширено: больше паттернов для фактов о людях
     patterns = [
         ("я живу в ", "живёт в"), ("я из ", "из"), ("я работаю ", "работает"),
+        ("я работаю в ", "работает в"), ("я учусь ", "учится"),
         ("у меня собака", "есть собака"), ("у меня кот", "есть кот"),
+        ("у меня ребенок", "есть ребенок"), ("у меня дети", "есть дети"),
         ("я люблю ", "любит"), ("мне нравится ", "нравится"),
-        ("я обожаю ", "обожает"), ("я фрилансер", "фрилансер"),
+        ("я обожаю ", "обожает"), ("я ненавижу ", "не любит"),
+        ("я фрилансер", "фрилансер"), ("я программист", "программист"),
+        ("я дизайнер", "дизайнер"), ("я маркетолог", "маркетолог"),
+        ("я езжу на ", "ездит на"), ("у меня ", "имеет"),
+        ("я был в ", "был в"), ("я была в ", "была в"),
+        ("мне ", " "),  # слишком общее — убрано
     ]
     for pattern, label in patterns:
+        if pattern == "мне ":
+            continue  # пропускаем общий паттерн
         if pattern in t:
             idx = t.index(pattern) + len(pattern)
             rest = text[idx:idx+80].split(".")[0].split("!")[0].split("?")[0].strip()
             if rest and 2 < len(rest) < 80:
                 fact = f"{name} {label} {rest}"
-                await db.add_group_memory(chat_id, user_id, fact)
+                # Проверяем что такого факта ещё нет (дедупликация)
+                existing = await db.get_group_memory(chat_id, user_id=user_id, limit=20)
+                existing_facts = [r["fact"].lower() for r in existing]
+                if fact.lower() not in existing_facts:
+                    await db.add_group_memory(chat_id, user_id, fact)
+                    logger.info(f"MEMORY STORED: {fact} (chat={chat_id}, user={user_id})")
                 break
