@@ -128,18 +128,60 @@ async def _log_group_message(message: Message, content: str = "", is_media: bool
     )
 
 
+# Content deduplication: если один пост канала пришёл в 5+ групп за 5 мин,
+# Lyuba отвечает только в ПЕРВОЙ группе, в остальных — только реакция.
+# Это предотвращает спам (один ответ на пост, не 5 одинаковых).
+_recent_content_hashes: dict = {}  # {content_hash: (chat_id, timestamp)}
+_DEDUP_TTL = 300  # 5 минут
+
+
+def _content_hash(text: str) -> str:
+    """Хэш контента сообщения (первые 100 символов, нормализованные)."""
+    import hashlib
+    # Нормализуем: убираем префикс [канал], берём первые 100 символов
+    import re
+    clean = re.sub(r'^\[[^\]]+\]\s*', '', text or '')
+    clean = clean[:100].strip().lower()
+    return hashlib.md5(clean.encode()).hexdigest()
+
+
+def _should_skip_duplicate(text: str, chat_id: int) -> bool:
+    """Проверяет: уже отвечали на этот контент в другой группе за последние 5 мин?
+
+    Returns True если это ДУБЛЬ (уже отвечали в другой группе) → SKIP.
+    Returns False если это ПЕРВЫЙ раз → можно отвечать.
+    """
+    import time
+    now = time.time()
+    # Clean old entries
+    global _recent_content_hashes
+    _recent_content_hashes = {
+        k: v for k, v in _recent_content_hashes.items()
+        if now - v[1] < _DEDUP_TTL
+    }
+    h = _content_hash(text)
+    if h in _recent_content_hashes:
+        first_chat, ts = _recent_content_hashes[h]
+        if first_chat != chat_id:
+            # Уже отвечали в ДРУГОЙ группе → SKIP (это дубль)
+            return True
+        # Тот же chat — не дубль (может быть повтор от того же канала)
+        return False
+    # Первый раз видели этот контент → запоминаем, не SKIP
+    _recent_content_hashes[h] = (chat_id, now)
+    return False
+
+
 async def _should_respond(message: Message) -> bool:
     """Decide if Lyuba responds to this group message.
 
     Lyuba is VERY ACTIVE: responds to direct mentions/replies ALWAYS,
-    and proactively comments on most other messages (high probability).
+    and proactively comments on most other messages.
 
-    SKIP cases:
-      - OWN messages (anti-self-reply)
-      - Channel auto-forwards (user_id 777000 = Telegram service, or
-        sender_chat=channel, or forward_from_chat, or "[sochiautoparts]"
-        prefix). These flood 5+ groups simultaneously — commenting in all
-        = spam. Lyuba REACTS (emoji) but does NOT write text.
+    Channel auto-forwards (user_id 777000 = Telegram service, [канал] prefix):
+      - DEDUPLICATED: если один пост пришёл в 5+ групп, Lyuba отвечает только
+        в ПЕРВОЙ, в остальных — только реакция. Это предотвращает спам.
+      - probability 40% (не на каждый пост канала, а на каждый 2-3й)
     """
     u = message.from_user
     # CRITICAL: Skip OWN messages — by user_id match.
@@ -150,17 +192,20 @@ async def _should_respond(message: Message) -> bool:
     if directed:
         return True
 
-    # Channel auto-forwarded posts: SKIP text response (would spam 5+ groups).
-    # user_id 777000 = Telegram service account that auto-forwards channel
-    # posts to discussion groups. React only, no text.
+    # Channel auto-forwarded posts: deduplicate + probability
     is_channel_forward = (
         (u and u.id == 777000)
         or (message.sender_chat and message.sender_chat.type == "channel")
         or (message.forward_from_chat is not None)
-        or (message.text and message.text.startswith("[sochiautoparts]"))
+        or (message.text and (message.text.startswith("[sochiautoparts]")
+                              or message.text.startswith("[bmw_mpower_club]")))
     )
     if is_channel_forward:
-        return False  # reaction only (handled in handle_group_text)
+        # Проверяем дубль: если уже отвечали в другой группе → SKIP
+        if _should_skip_duplicate(message.text or "", message.chat.id):
+            return False  # дубль — только реакция
+        # Не дубль — отвечаем с вероятностью 40% (не на каждый пост канала)
+        return random.random() < 0.40
 
     # If this message is a REPLY to another user (a discussion thread),
     # Lyuba is MORE likely to join the conversation.
