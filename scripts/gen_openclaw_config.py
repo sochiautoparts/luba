@@ -9,16 +9,18 @@ from pathlib import Path
 
 PROVIDERS = [
     {"id":"pollinations","baseUrl":"https://text.pollinations.ai/openai","api":"openai-completions","timeoutSeconds":12,"always":True,"models":[{"id":"openai","name":"Pollinations GPT-OSS 20B (free)"}]},
-    {"id":"groq","baseUrl":"https://api.groq.com/openai/v1","api":"openai-completions","env":"GROQ_API_KEY","timeoutSeconds":12,"models":[{"id":"llama-3.3-70b-versatile","name":"Groq Llama 3.3 70B"},{"id":"llama-3.1-8b-instant","name":"Groq Llama 3.1 8B"}]},
-    {"id":"gemini","baseUrl":"https://generativelanguage.googleapis.com/v1beta/openai","api":"openai-completions","env":"GEMINI_API_KEY","timeoutSeconds":12,"models":[{"id":"gemini-2.0-flash","name":"Gemini 2.0 Flash"}]},
-    {"id":"openrouter","baseUrl":"https://openrouter.ai/api/v1","api":"openai-completions","env":"OPENROUTER_API_KEY","timeoutSeconds":12,"models":[{"id":"meta-llama/llama-3.3-70b-instruct:free","name":"OpenRouter Llama 3.3 70B (free)"}]},
-    {"id":"huggingface","baseUrl":"https://router.huggingface.co/v1","api":"openai-completions","env":"HF_TOKEN","timeoutSeconds":12,"models":[{"id":"qwen2.5-7b-instruct","name":"HF Qwen2.5 7B"}]},
-    {"id":"cerebras","baseUrl":"https://api.cerebras.ai/v1","api":"openai-completions","env":"CEREBRAS_API_KEY","timeoutSeconds":12,"models":[{"id":"llama-3.3-70b","name":"Cerebras Llama 3.3 70B"}]},
+    {"id":"groq","baseUrl":"https://api.groq.com/openai/v1","api":"openai-completions","env":"GROQ_API_KEY","timeoutSeconds":12,"models":[{"id":"llama-3.3-70b-versatile","name":"Groq Llama 3.3 70B"},{"id":"llama-3.1-8b-instant","name":"Groq Llama 3.1 8B (fast)"},{"id":"deepseek-r1-distill-llama-70b","name":"Groq DeepSeek R1 70B"},{"id":"qwen-2.5-32b","name":"Groq Qwen 2.5 32B"}]},
+    {"id":"gemini","baseUrl":"https://generativelanguage.googleapis.com/v1beta/openai","api":"openai-completions","env":"GEMINI_API_KEY","timeoutSeconds":12,"models":[{"id":"gemini-2.0-flash","name":"Gemini 2.0 Flash"},{"id":"gemini-1.5-flash","name":"Gemini 1.5 Flash"}]},
+    {"id":"openrouter","baseUrl":"https://openrouter.ai/api/v1","api":"openai-completions","env":"OPENROUTER_API_KEY","timeoutSeconds":12,"models":[{"id":"meta-llama/llama-3.3-70b-instruct:free","name":"OpenRouter Llama 3.3 70B (free)"},{"id":"google/gemma-4-31b-it:free","name":"OpenRouter Gemma 4 31B (free)"},{"id":"qwen/qwen3-next-80b-a3b-instruct:free","name":"OpenRouter Qwen3 Next 80B (free)"}]},
+    {"id":"huggingface","baseUrl":"https://router.huggingface.co/v1","api":"openai-completions","env":"HF_TOKEN","timeoutSeconds":12,"models":[{"id":"qwen2.5-7b-instruct","name":"HF Qwen2.5 7B"},{"id":"meta-llama/Llama-3.1-8B-Instruct","name":"HF Llama 3.1 8B"}]},
+    {"id":"cerebras","baseUrl":"https://api.cerebras.ai/v1","api":"openai-completions","env":"CEREBRAS_API_KEY","timeoutSeconds":12,"models":[{"id":"llama-3.3-70b","name":"Cerebras Llama 3.3 70B"},{"id":"llama3.1-8b","name":"Cerebras Llama 3.1 8B"}]},
+    {"id":"cloudflare","baseUrl":"https://api.cloudflare.com/client/v4/accounts/CF_ACCOUNT_ID/ai/v1","api":"openai-completions","env":"CF_API_TOKEN_1","env_account":"CF_ACCOUNT_ID_1","timeoutSeconds":12,"models":[{"id":"@cf/meta/llama-3.1-8b-instruct","name":"CF Llama 3.1 8B"},{"id":"@cf/qwen/qwen1.5-14b-chat-awq","name":"CF Qwen 1.5 14B"}]},
     {"id":"openai","baseUrl":"https://api.openai.com/v1","api":"openai-completions","env":"OPENAI_API_KEY","timeoutSeconds":12,"models":[{"id":"gpt-4o-mini","name":"OpenAI GPT-4o mini"}]},
     {"id":"anthropic","baseUrl":"https://api.anthropic.com/v1","api":"anthropic-messages","env":"ANTHROPIC_API_KEY","timeoutSeconds":12,"models":[{"id":"claude-3-5-sonnet-latest","name":"Claude 3.5 Sonnet"}]},
     {"id":"mistral","baseUrl":"https://api.mistral.ai/v1","api":"openai-completions","env":"MISTRAL_API_KEY","timeoutSeconds":12,"models":[{"id":"mistral-small-latest","name":"Mistral Small"}]},
+    {"id":"sambanova","baseUrl":"https://api.sambanova.ai/v1","api":"openai-completions","env":"SAMBANOVA_API_KEY","timeoutSeconds":12,"models":[{"id":"Meta-Llama-3.1-8B-Instruct","name":"SambaNova Llama 3.1 8B"}]},
 ]
-PRIORITY = ["groq","gemini","cerebras","openrouter","huggingface","mistral","openai","anthropic","pollinations"]
+PRIORITY = ["groq","gemini","cerebras","openrouter","huggingface","sambanova","mistral","cloudflare","openai","anthropic","pollinations"]
 
 def _env_set(n): v=os.getenv(n,"").strip(); return bool(v) and v.lower() not in ("not_configured","none","null")
 def _idx(pid):
@@ -30,7 +32,15 @@ def build_config():
     provs={}; active=[]
     for p in PROVIDERS:
         if p.get("always") or (p.get("env") and _env_set(p["env"])):
-            e={"baseUrl":p["baseUrl"],"api":p["api"],"timeoutSeconds":p["timeoutSeconds"],"models":p["models"]}
+            base_url = p["baseUrl"]
+            # Cloudflare: substitute account ID from env
+            if "CF_ACCOUNT_ID" in base_url and p.get("env_account"):
+                acct = os.getenv(p["env_account"], "").strip()
+                if acct:
+                    base_url = base_url.replace("CF_ACCOUNT_ID", acct)
+                else:
+                    continue  # skip cloudflare if no account ID
+            e={"baseUrl":base_url,"api":p["api"],"timeoutSeconds":p["timeoutSeconds"],"models":p["models"]}
             if p.get("always"):
                 if p.get("apiKey"): e["apiKey"]=p["apiKey"]
             else:

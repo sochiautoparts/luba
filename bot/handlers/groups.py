@@ -206,7 +206,7 @@ async def handle_new_members(message):
     newcomers = message.new_chat_members or []
     if not any(m and m.id == config.BOT_ID for m in newcomers): return
     try:
-        await message.reply("Люба на связи 😊 Буду активно参与овать в беседе, ставить реакции и дополнять новости из интернета. Кидайте темы! ☕")
+        await message.reply("Люба на связи 😊 Буду активно участвовать в беседе, ставить реакции и дополнять новости из интернета. Кидайте темы! ☕")
         logger.info(f"BOT ADDED to chat {message.chat.id} ({message.chat.title})")
     except: pass
 

@@ -35,6 +35,9 @@ class BotConfig:
     OPENAI_API_KEY: str = field(default_factory=lambda: _env("OPENAI_API_KEY"))
     ANTHROPIC_API_KEY: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY"))
     POLLINATIONS_API_KEY: str = field(default_factory=lambda: _env("POLLINATIONS_API_KEY"))
+    SAMBANOVA_API_KEY: str = field(default_factory=lambda: _env("SAMBANOVA_API_KEY"))
+    CF_ACCOUNT_ID_1: str = field(default_factory=lambda: _env("CF_ACCOUNT_ID_1"))
+    CF_API_TOKEN_1: str = field(default_factory=lambda: _env("CF_API_TOKEN_1"))
 
     DB_PATH: str = field(default_factory=lambda: _env("DB_PATH", "data/luba.db"))
 
@@ -73,7 +76,9 @@ class BotConfig:
         if self.CEREBRAS_API_KEY: p.append("cerebras")
         if self.OPENROUTER_API_KEY: p.append("openrouter")
         if self.HF_TOKEN: p.append("huggingface")
+        if self.SAMBANOVA_API_KEY: p.append("sambanova")
         if self.MISTRAL_API_KEY: p.append("mistral")
+        if self.CF_API_TOKEN_1 and self.CF_ACCOUNT_ID_1: p.append("cloudflare")
         if self.OPENAI_API_KEY: p.append("openai")
         if self.ANTHROPIC_API_KEY: p.append("anthropic")
         p.append("pollinations")
