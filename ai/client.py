@@ -140,31 +140,31 @@ async def chat(prompt, system="", extra_context="", dialog_history=None, max_tok
     if fast:
         use_get = (not extra_context) and (not dialog_history) and len(prompt) < 400
         if use_get:
-            short_persona = "Ты Люба, девушка из Сочи. Женский род всегда. Отвечай живо, кратко (2-4 предложения). По-русски. Без выдуманных фактов."
-            embedded = f"{short_persona}\n\nВопрос: {prompt}\n\nЛюба:"
+            short_persona = "Ты Люба, девушка из Сочи. Женский род всегда. Отвечай живо, кратко (2-4 предложения). По-русски. Без выдуманных фактов. Не начинай с имени."
+            embedded = f"{short_persona}\n\nВопрос: {prompt}\n\nОтвет:"
             out = await _call_pollinations_get(embedded, 12.0)
             if out:
                 _stats["success"] += 1; _stats["pollinations_backup"] += 1
                 logger.info(f"AI fast=pollinations-GET ({time.time()-t0:.1f}s) len={len(out)}")
-                return out
+                return _strip_name_prefix(out)
         out = await _call_pollinations_direct(messages, max_tokens, 30.0)
         if out:
             _stats["success"] += 1; _stats["pollinations_backup"] += 1
             logger.info(f"AI fast=pollinations-POST ({time.time()-t0:.1f}s) len={len(out)}")
-            return out
+            return _strip_name_prefix(out)
         out = await _call_openclaw(messages, max_tokens, temperature, 15.0)
         if out:
             _stats["success"] += 1; _stats["openclaw_ok"] += 1
-            return out
+            return _strip_name_prefix(out)
     else:
         out = await _call_openclaw(messages, max_tokens, temperature, 25.0)
         if out:
             _stats["success"] += 1; _stats["openclaw_ok"] += 1
-            return out
+            return _strip_name_prefix(out)
         out = await _call_pollinations_direct(messages, max_tokens, 20.0)
         if out:
             _stats["success"] += 1; _stats["pollinations_backup"] += 1
-            return out
+            return _strip_name_prefix(out)
 
     _stats["fail"] += 1
     if allow_static_fallback:
@@ -172,6 +172,13 @@ async def chat(prompt, system="", extra_context="", dialog_history=None, max_tok
         _stats["static_fallback"] += 1
         return fb
     return ""
+
+def _strip_name_prefix(text):
+    if not text: return text
+    import re
+    stripped = re.sub(r'^\s*Люба\s*[:,\-—]\s*', '', text, flags=re.IGNORECASE)
+    stripped = re.sub(r'^\s*Ответ\s*[:,\-—]\s*', '', stripped, flags=re.IGNORECASE)
+    return stripped
 
 async def comment(prompt, extra_context="", mood="", dialog_history=None):
     from bot.persona import COMMENT_PROMPT
