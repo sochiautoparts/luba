@@ -1,1 +1,1 @@
-"""Handlers package for Lyuba bot."""
+"""Handlers package."""

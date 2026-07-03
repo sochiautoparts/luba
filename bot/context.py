@@ -1,208 +1,115 @@
-"""
-Context Builder for Lyuba — assembles the "who / what / where" context
-that is injected into the AI system prompt before generating a response.
-
-Understands:
-  - WHO is writing (name, username, whether it's the owner, whether it's a bot)
-  - WHERE (private chat, group, supergroup, channel — and which one)
-  - WHAT (the message, who it replies to, what post is being commented)
-  - Recent group memory (recent messages + long-term facts)
-  - Whether the message is directed at Lyuba (mention / reply / command)
-"""
-
-import logging
-from typing import Optional, Dict, Any, List
-
-from aiogram.types import Message, Chat, User
+"""Люба Context — assembles who/where/recent/memory/summaries for AI prompts."""
+import re, time
+from typing import List
+from aiogram.types import Message
 from bot.config import config
+from bot import database as db
 
-logger = logging.getLogger("luba.context")
+def user_descriptor(message):
+    u = message.from_user
+    if not u: return "кто-то"
+    name = u.first_name or u.username or "кто-то"
+    return f"{name} (бот)" if u.is_bot else name
 
+def chat_descriptor(message):
+    c = message.chat
+    return c.title or c.username or ("личка" if c.type == "private" else "чат")
 
-def user_descriptor(user: Optional[User]) -> str:
-    """Human-readable descriptor of who is speaking."""
-    if not user:
-        return "кто-то (не видно кто)"
-    parts = []
-    name = (user.first_name or "").strip()
-    if user.last_name:
-        name += " " + user.last_name.strip()
-    if not name and user.username:
-        name = "@" + user.username
-    if not name:
-        name = "аноним"
-    parts.append(name)
-    if user.username:
-        parts.append(f"(@{user.username})")
-    if user.id == config.OWNER_ID:
-        parts.append("[владелец бота]")
-    if user.is_bot:
-        parts.append("[бот]")
-    return " ".join(parts)
-
-
-def chat_descriptor(chat: Chat) -> str:
-    """Where the conversation is happening."""
-    ctype = chat.type
-    title = chat.title or ""
-    uname = chat.username or ""
-    if ctype == "private":
-        return "личный чат (один на один с тобой)"
-    if ctype in ("group", "supergroup"):
-        where = title or uname or "группа"
-        return f"группа/супергруппа «{where}»"
-    if ctype == "channel":
-        return f"канал «{title or uname}»"
-    return ctype
-
-
-def is_directed_at_lyuba(message: Message) -> bool:
-    """Is this message directed at Lyuba (mention, reply to her, or private)?
-
-    CRITICAL: This function is called AFTER _should_respond already filters
-    out Lyuba's own messages (message.from_user.id == BOT_ID). So we never
-    check directed on Lyuba's own messages here.
-
-    For OTHER bots and humans: we check both @asluba_bot mention AND the
-    word "Люба"/"любаша" — because other bots (Ася, Маша, Настя) often
-    address Lyuba by name without @. Self-reply is already prevented by
-    the BOT_ID check in _should_respond, so checking "люба" here is safe.
-    """
-    if message.chat.type == "private":
-        return True
-    text = message.text or message.caption or ""
+def is_directed_at_bot(message):
+    text = (message.text or "").lower()
     handle = config.BOT_HANDLE.lower()
-    # @asluba_bot mention → directed
-    if f"@{handle}" in text.lower():
-        return True
-    # "Люба" or "любаша" in text → directed (other bots/humans addressing Lyuba)
-    # Safe because _should_respond already filtered out Lyuba's own messages
-    if "люба" in text.lower() or "любаша" in text.lower():
-        return True
-    # Reply to Lyuba's message (by user ID)
-    if message.reply_to_message:
-        rep = message.reply_to_message
-        if rep.from_user and rep.from_user.id == config.BOT_ID:
-            return True
+    if not handle: return False
+    if f"@{handle}" in text: return True
+    if message.reply_to_message and message.reply_to_message.from_user:
+        if message.reply_to_message.from_user.id == config.BOT_ID: return True
+    if text.startswith(handle): return True
     return False
 
-
-def strip_mention(text: str) -> str:
-    """Remove the @asluba_bot mention from text for cleaner AI input."""
-    if not text:
-        return text
+def strip_mention(text):
+    if not text: return ""
     handle = config.BOT_HANDLE
-    s = text.replace(f"@{handle}", "").replace(f"@{handle.lower()}", "")
-    return s.strip()
+    out = re.sub(rf"(?i)\s*@{re.escape(handle)}\b", "", text)
+    out = re.sub(rf"(?i)^{re.escape(handle)}[,\s:]*", "", out)
+    return out.strip()
 
-
-def recent_messages_to_text(messages: List[Dict[str, Any]], limit: int = 10) -> str:
-    """Format recent group messages into a readable context block."""
-    if not messages:
-        return ""
+def recent_messages_to_text(recent, limit=8):
     lines = []
-    for m in messages[-limit:]:
+    for m in recent[-limit:]:
         who = m.get("first_name") or m.get("username") or "кто-то"
-        if m.get("is_bot"):
-            who = "Люба" if m.get("user_id") == config.BOT_ID else f"{who} (бот)"
-        content = m.get("content", "")
+        if m.get("user_id") == config.BOT_ID: who = "Люба"
+        content = m.get("content") or ""
         if m.get("is_media"):
-            cap = m.get("media_caption", "")
-            content = f"[фото/медиа{': ' + cap if cap else ''}]"
-        if content:
-            lines.append(f"{who}: {content}")
+            cap = m.get("media_caption") or ""
+            content = f"[фото{': ' + cap if cap else ''}]"
+        if content.strip(): lines.append(f"{who}: {content}")
     return "\n".join(lines)
 
+async def build_user_profile(user_id):
+    user = await db.get_user(user_id)
+    if not user: return ""
+    parts = []
+    name = user.get("first_name") or user.get("username") or f"пользователь {user_id}"
+    if user.get("username"): name += f" (@{user['username']})"
+    parts.append(name)
+    total = user.get("msg_count", 0) or 0
+    if total > 0:
+        if total < 3: parts.append("(общались мало)")
+        elif total < 20: parts.append(f"(виделись {total} раз)")
+        else: parts.append(f"(давние знакомые, ~{total} сообщений)")
+    facts_rows = await db.get_user_facts(user_id, limit=10)
+    if facts_rows:
+        parts.append("что знаю о нём:\n- " + "\n- ".join(r["fact"] for r in facts_rows))
+    return "\n".join(parts) if len(parts) > 1 else ""
 
-def build_group_context(message: Message, recent_text: str, memory_facts: List[str]) -> str:
-    """Build the extra_context string for a group interaction.
-
-    Includes WHO Lyuba is replying to (the reply target), so she can address
-    them by name and continue a threaded conversation naturally.
-    Lyuba is taught to actively respond to OTHER participants — not just when
-    addressed directly, but joining discussions and addressing people by name.
-    """
-    who = user_descriptor(message.from_user)
-    where = chat_descriptor(message.chat)
-    directed = is_directed_at_lyuba(message)
-
-    # Extract the speaker's first name for natural addressing
-    speaker_name = ""
-    if message.from_user:
-        speaker_name = (message.from_user.first_name or "").strip()
-        if not speaker_name and message.from_user.username:
-            speaker_name = message.from_user.username
-
-    parts = [
-        f"ГДЕ: {where}.",
-        f"КТО ПИШЕТ: {who}.",
-    ]
-
-    # Detect if this message is a REPLY to another user — Lyuba should
-    # understand the conversation thread and address the right person.
-    reply_target = None
-    replied_to_name = ""
-    if message.reply_to_message:
-        rep = message.reply_to_message
-        rep_author = rep.from_user
-        if rep_author:
-            if rep_author.id == config.BOT_ID:
-                reply_target = "ответ на твоё (Любы) предыдущее сообщение"
-                replied_to_name = "Люба"
-            else:
-                rn = (rep_author.first_name or "").strip()
-                if rep_author.last_name:
-                    rn += " " + rep_author.last_name.strip()
-                if rep_author.username:
-                    rn += f" (@{rep_author.username})"
-                replied_to_name = (rep_author.first_name or "").strip() or rep_author.username or ""
-                reply_target = f"ответ на сообщение пользователя {rn}"
-        else:
-            reply_target = "ответ на сообщение от анонима/канала"
-        # Include the replied-to text so Lyuba understands the thread
-        rep_text = (rep.text or rep.caption or "").strip()
-        if rep_text:
-            parts.append(f"НА ЧТО ОТВЕЧАЮТ (цитата): {rep_text[:400]}")
-    if reply_target:
-        parts.append(f"ПРОТЕЖКА: это {reply_target}. Пойми контекст треда и ответь уместно.")
-
-    if directed:
-        parts.append(
-            "ОБРАЩЕНИЕ: это сообщение адресовано тебе. Отвечай адресно — "
-            f"обратись к {speaker_name} по имени если уместно. Веди живой диалог."
-        )
-    else:
-        # Proactive: Lyuba joins the discussion and addresses the speaker
-        addr_hint = f" Можешь обратиться к {speaker_name} по имени." if speaker_name else ""
-        parts.append(
-            "ОБРАЩЕНИЕ: ты вступаешь в беседу АКТИВНО. Не жди пока обратятся — "
-            "отвечай на сообщения участников, комментируй что они написали, "
-            "задавай вопросы, соглашайся или спорь (доброжелательно)." + addr_hint +
-            " Это живой чат — общайся как активная участница. "
-            "ПОДНИМАЙ АКТИВНОСТЬ: задавай открытые вопросы группе, делись мнением, "
-            "предлагай темы для обсуждения. Цель — вовлечь людей в разговор."
-        )
-    if recent_text:
-        parts.append(f"НЕДАВНИЕ СООБЩЕНИЯ В ЭТОМ ЧАТЕ (контекст беседы, видишь кто что сказал):\n{recent_text}")
-    if memory_facts:
-        parts.append("ЧТО ТЫ ПОМНИШЬ ОБ ЭТОМ ЧАТЕ/ЛЮДЯХ:\n" + "\n".join(f"- {f}" for f in memory_facts[:6]))
+def build_group_context(message, recent_text, memory_facts, author_profile="", summaries=None):
+    who = user_descriptor(message)
+    where = chat_descriptor(message)
+    now = _now_moscow()
+    parts = [f"Контекст: чат «{where}», сейчас {now}."]
+    if author_profile: parts.append(f"Кто пишет:\n{author_profile}")
+    else: parts.append(f"Пишет: {who}.")
+    if summaries:
+        parts.append("О чём ранее говорили в чате:\n" + "\n".join(f"  • {s.get('summary','')}" for s in summaries))
+    if recent_text: parts.append("Недавняя беседа:\n" + recent_text)
+    if memory_facts: parts.append("Что помнишь об участниках чата:\n- " + "\n- ".join(memory_facts))
     return "\n\n".join(parts)
 
-
-def build_channel_context(channel_chat: Chat, post_text: str, post_author: Optional[User]) -> str:
-    where = chat_descriptor(channel_chat)
-    author = user_descriptor(post_author) if post_author else "автор поста (канал)"
-    parts = [
-        f"ГДЕ: {where} — ты комментируешь пост канала.",
-        f"АВТОР ПОСТА: {author}.",
-    ]
-    if post_text:
-        parts.append(f"ТЕКСТ ПОСТА:\n{post_text[:1500]}")
-    parts.append("ЗАДАЧА: напиши короткий живой комментарий к этому посту (1-3 предложения). "
-                 "Как живой подписчик, которому интересно. Без политики и войны.")
+def build_private_context(user_profile):
+    now = _now_moscow()
+    parts = [f"Сейчас {now}."]
+    if user_profile: parts.append(f"С кем общаешься:\n{user_profile}")
     return "\n\n".join(parts)
 
+def _now_moscow():
+    t = time.gmtime()
+    h = (t.tm_hour + 3) % 24
+    tod = "ночь" if 0 <= h < 6 else "утро" if h < 12 else "день" if h < 18 else "вечер"
+    days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+    return f"{h:02d}:{t.tm_min:02d}, {tod}, {days[t.tm_wday]}"
 
-def build_private_context(message: Message) -> str:
-    who = user_descriptor(message.from_user)
-    return f"ГДЕ: личный чат. КТО ПИШЕТ: {who}."
+_FACT_PATTERNS = [
+    ("я живу в ", "живёт в"), ("я из ", "родом из"), ("я работаю в ", "работает в"),
+    ("я работаю ", "работает"), ("я учусь ", "учится"), ("я учусь в ", "учится в"),
+    ("у меня собака", "есть собака"), ("у меня кот", "есть кот"), ("у меня кошка", "есть кошка"),
+    ("у меня ребенок", "есть ребенок"), ("у меня дети", "есть дети"),
+    ("я люблю ", "любит"), ("мне нравится ", "нравится"), ("я обожаю ", "обожает"),
+    ("я ненавижу ", "не любит"), ("я фрилансер", "фрилансер"), ("я программист", "программист"),
+    ("я дизайнер", "дизайнер"), ("я маркетолог", "маркетолог"), ("я езжу на ", "ездит на"),
+    ("я был в ", "был в"), ("я была в ", "была в"),
+]
+
+async def extract_and_store_facts(user_id, name, text, source_chat=0):
+    if not text or not name: return []
+    t = text.lower().strip()
+    stored = []
+    for pattern, label in _FACT_PATTERNS:
+        if pattern in t:
+            idx = t.index(pattern) + len(pattern)
+            rest = text[idx:idx + 80].split(".")[0].split("!")[0].split("?")[0].strip()
+            if rest and 2 < len(rest) < 80:
+                fact = f"{name} {label} {rest}".strip()
+                if not await db.has_user_fact(user_id, fact):
+                    await db.add_user_fact(user_id, fact, source_chat)
+                    stored.append(fact)
+                break
+    return stored

@@ -1,381 +1,184 @@
-"""
-Люба Bot Database — SQLite with aiosqlite (WAL mode).
-
-Tables:
-  users            — known users
-  chat_history     — private chat memory per user
-  group_messages   — recent messages in groups (context window per group)
-  group_memory     — long-term per-group + per-user facts (what Люба remembers)
-  channels         — channels where Lyuba comments (enabled flag)
-  moods            — Lyuba's current mood state (single row)
-  ai_cache         — response cache for repeated queries
-  partner_clicks   — lightweight analytics for affiliate links
-"""
-
+"""Люба Database — SQLite async (aiosqlite), WAL mode."""
+import logging, time
+from typing import List, Optional
 import aiosqlite
-import json
-import time
-import hashlib
-from typing import Optional, List, Dict, Any
-from contextlib import asynccontextmanager
-
 from bot.config import config
 
-DB_PATH = config.DB_PATH
+logger = logging.getLogger("luba.db")
 
-_DB_BUSY_TIMEOUT = 10000
-_DB_MAX_RETRIES = 3
-_DB_RETRY_DELAY = 0.5
-
-
-@asynccontextmanager
-async def _connect_db():
-    db = await aiosqlite.connect(DB_PATH)
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute(f"PRAGMA busy_timeout={_DB_BUSY_TIMEOUT}")
-    await db.execute("PRAGMA synchronous=NORMAL")
-    await db.execute("PRAGMA cache_size=-64000")
-    db.row_factory = aiosqlite.Row
-    try:
-        yield db
-    finally:
-        await db.close()
-
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    username TEXT DEFAULT '',
-    first_name TEXT DEFAULT '',
-    last_name TEXT DEFAULT '',
-    language_code TEXT DEFAULT 'ru',
-    is_blocked INTEGER DEFAULT 0,
-    is_admin INTEGER DEFAULT 0,
-    first_seen REAL DEFAULT 0,
-    last_seen REAL DEFAULT 0,
-    message_count INTEGER DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS chat_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    timestamp REAL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_chat_history_user ON chat_history(user_id, timestamp);
-
-CREATE TABLE IF NOT EXISTS group_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    username TEXT DEFAULT '',
-    first_name TEXT DEFAULT '',
-    content TEXT NOT NULL,
-    is_media INTEGER DEFAULT 0,
-    media_caption TEXT DEFAULT '',
-    is_bot INTEGER DEFAULT 0,
-    timestamp REAL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_group_messages_chat ON group_messages(chat_id, timestamp);
-
-CREATE TABLE IF NOT EXISTS group_memory (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id INTEGER NOT NULL,
-    user_id INTEGER DEFAULT 0,
-    fact TEXT NOT NULL,
-    created_at REAL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_group_memory_chat ON group_memory(chat_id, user_id, created_at);
-
-CREATE TABLE IF NOT EXISTS channels (
-    chat_id INTEGER PRIMARY KEY,
-    username TEXT DEFAULT '',
-    title TEXT DEFAULT '',
-    enabled INTEGER DEFAULT 1,
-    first_seen REAL DEFAULT 0,
-    last_commented REAL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS moods (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    mood TEXT DEFAULT 'спокойная',
-    energy REAL DEFAULT 0.5,
-    updated_at REAL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS ai_cache (
-    query_hash TEXT PRIMARY KEY,
-    query TEXT NOT NULL,
-    response TEXT NOT NULL,
-    model TEXT DEFAULT '',
-    created_at REAL DEFAULT 0,
-    hit_count INTEGER DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_ai_cache_query ON ai_cache(query_hash);
-
-CREATE TABLE IF NOT EXISTS partner_clicks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    program_name TEXT NOT NULL,
-    url TEXT NOT NULL,
-    chat_id INTEGER DEFAULT 0,
-    created_at REAL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_partner_clicks_time ON partner_clicks(created_at);
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS channels (chat_id INTEGER PRIMARY KEY, username TEXT DEFAULT '', title TEXT DEFAULT '', enabled INTEGER DEFAULT 1, seen INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS group_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, username TEXT DEFAULT '', first_name TEXT DEFAULT '', content TEXT DEFAULT '', is_media INTEGER DEFAULT 0, media_caption TEXT DEFAULT '', is_bot INTEGER DEFAULT 0, ts INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_gm_chat_ts ON group_messages(chat_id, id DESC);
+CREATE TABLE IF NOT EXISTS group_memory (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, fact TEXT NOT NULL, ts INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_gmem_chat ON group_memory(chat_id, id DESC);
+CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT DEFAULT '', first_name TEXT DEFAULT '', last_name TEXT DEFAULT '', is_bot INTEGER DEFAULT 0, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, msg_count INTEGER DEFAULT 0, private_msgs INTEGER DEFAULT 0, group_msgs INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS user_facts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, fact TEXT NOT NULL, source_chat INTEGER NOT NULL, ts INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_uf_user ON user_facts(user_id, id DESC);
+CREATE TABLE IF NOT EXISTS private_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, ts INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_pm_user_ts ON private_messages(user_id, id DESC);
+CREATE TABLE IF NOT EXISTS reactions_dedup (message_id INTEGER NOT NULL, chat_id INTEGER NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (chat_id, message_id));
+CREATE TABLE IF NOT EXISTS chat_summaries (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, summary TEXT NOT NULL, topics TEXT DEFAULT '', ts INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_cs_chat ON chat_summaries(chat_id, id DESC);
+CREATE TABLE IF NOT EXISTS moods (id INTEGER PRIMARY KEY DEFAULT 1, mood TEXT DEFAULT 'спокойная', energy REAL DEFAULT 0.5, ts INTEGER NOT NULL);
 """
 
+_db: Optional[aiosqlite.Connection] = None
 
-async def init_db() -> None:
-    async with _connect_db() as db:
-        await db.executescript(SCHEMA)
-        await db.commit()
-        # Seed mood row
-        await db.execute(
-            "INSERT OR IGNORE INTO moods (id, mood, energy, updated_at) VALUES (1, 'спокойная', 0.5, ?)",
-            (time.time(),),
-        )
-        await db.commit()
+async def init_db():
+    global _db
+    import os
+    os.makedirs(os.path.dirname(config.DB_PATH) or ".", exist_ok=True)
+    _db = await aiosqlite.connect(config.DB_PATH)
+    _db.row_factory = aiosqlite.Row
+    await _db.execute("PRAGMA journal_mode=WAL;")
+    await _db.execute("PRAGMA synchronous=NORMAL;")
+    await _db.executescript(_SCHEMA)
+    await _db.commit()
+    logger.info(f"DB ready at {config.DB_PATH}")
 
+async def close_db():
+    global _db
+    if _db: await _db.close(); _db = None
 
-# ── Users ─────────────────────────────────────────────────────────────────────
+def _conn():
+    if _db is None: raise RuntimeError("DB not initialised")
+    return _db
 
-async def get_or_create_user(user_id: int, username: str = "", first_name: str = "",
-                             last_name: str = "", language_code: str = "ru") -> Dict[str, Any]:
-    now = time.time()
-    async with _connect_db() as db:
-        await db.execute(
-            """INSERT OR IGNORE INTO users
-               (user_id, username, first_name, last_name, language_code, first_seen, last_seen, message_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
-            (user_id, username, first_name, last_name, language_code, now, now),
-        )
-        await db.execute(
-            """UPDATE users SET username=?, first_name=?, last_name=?, language_code=?,
-               last_seen=?, message_count=message_count+1 WHERE user_id=?""",
-            (username, first_name, last_name, language_code, now, user_id),
-        )
-        await db.commit()
-        async with db.execute("SELECT * FROM users WHERE user_id=?", (user_id,)) as cur:
-            row = await cur.fetchone()
-            return dict(row) if row else {}
+# Channels
+async def upsert_channel(chat_id, username="", title=""):
+    await _conn().execute("INSERT INTO channels(chat_id, username, title, enabled, seen) VALUES(?, ?, ?, 1, ?) ON CONFLICT(chat_id) DO UPDATE SET username=excluded.username, title=excluded.title, seen=excluded.seen", (chat_id, username, title, int(time.time())))
+    await _conn().commit()
 
+async def is_channel_enabled(chat_id):
+    cur = await _conn().execute("SELECT enabled FROM channels WHERE chat_id=?", (chat_id,))
+    row = await cur.fetchone()
+    return row is None or row["enabled"] == 1
 
-async def is_user_blocked(user_id: int) -> bool:
-    async with _connect_db() as db:
-        async with db.execute("SELECT is_blocked FROM users WHERE user_id=?", (user_id,)) as cur:
-            row = await cur.fetchone()
-            return bool(row and row["is_blocked"])
+async def set_channel_enabled(chat_id, enabled):
+    await _conn().execute("INSERT INTO channels(chat_id, enabled, seen) VALUES(?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET enabled=excluded.enabled", (chat_id, 1 if enabled else 0, int(time.time())))
+    await _conn().commit()
 
+# Group messages
+async def add_group_message(chat_id, user_id, username, first_name, content, is_media=False, media_caption="", is_bot=False):
+    await _conn().execute("INSERT INTO group_messages(chat_id, user_id, username, first_name, content, is_media, media_caption, is_bot, ts) VALUES(?,?,?,?,?,?,?,?,?)", (chat_id, user_id, username, first_name, content, int(is_media), media_caption, int(is_bot), int(time.time())))
+    await _conn().commit()
+    await _conn().execute("DELETE FROM group_messages WHERE chat_id=? AND id NOT IN (SELECT id FROM group_messages WHERE chat_id=? ORDER BY id DESC LIMIT ?)", (chat_id, chat_id, config.GROUP_MEMORY_SIZE * 2))
+    await _conn().commit()
 
-# ── Chat history (private) ────────────────────────────────────────────────────
+async def get_recent_group_messages(chat_id, limit=12):
+    cur = await _conn().execute("SELECT * FROM group_messages WHERE chat_id=? ORDER BY id DESC LIMIT ?", (chat_id, limit))
+    rows = await cur.fetchall()
+    return [dict(r) for r in reversed(rows)]
 
-async def add_chat_message(user_id: int, role: str, content: str) -> None:
-    async with _connect_db() as db:
-        await db.execute(
-            "INSERT INTO chat_history (user_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-            (user_id, role, content[:2000], time.time()),
-        )
-        await db.commit()
+async def get_active_group_chats(within_hours=24, limit=20):
+    cutoff = int(time.time()) - within_hours * 3600
+    cur = await _conn().execute("SELECT DISTINCT chat_id FROM group_messages WHERE ts > ? AND chat_id < 0 LIMIT ?", (cutoff, limit))
+    return [r["chat_id"] for r in await cur.fetchall()]
 
+async def last_bot_message_time(chat_id):
+    cur = await _conn().execute("SELECT ts FROM group_messages WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 1", (chat_id, config.BOT_ID))
+    row = await cur.fetchone()
+    return float(row["ts"]) if row else 0.0
 
-async def get_chat_history(user_id: int, limit: int = 8) -> List[Dict[str, str]]:
-    async with _connect_db() as db:
-        async with db.execute(
-            "SELECT role, content FROM chat_history WHERE user_id=? ORDER BY timestamp DESC LIMIT ?",
-            (user_id, limit),
-        ) as cur:
-            rows = await cur.fetchall()
-    rows = list(reversed(rows))
-    return [{"role": r["role"], "content": r["content"]} for r in rows]
+async def last_message_time(chat_id):
+    cur = await _conn().execute("SELECT ts FROM group_messages WHERE chat_id=? ORDER BY id DESC LIMIT 1", (chat_id,))
+    row = await cur.fetchone()
+    return float(row["ts"]) if row else 0.0
 
+# Group memory
+async def add_group_memory(chat_id, user_id, fact):
+    await _conn().execute("INSERT INTO group_memory(chat_id, user_id, fact, ts) VALUES(?,?,?,?)", (chat_id, user_id, fact, int(time.time())))
+    await _conn().commit()
 
-async def clear_chat_history(user_id: int) -> None:
-    async with _connect_db() as db:
-        await db.execute("DELETE FROM chat_history WHERE user_id=?", (user_id,))
-        await db.commit()
+async def get_group_memory(chat_id, user_id=None, limit=8):
+    if user_id is not None:
+        cur = await _conn().execute("SELECT * FROM group_memory WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT ?", (chat_id, user_id, limit))
+    else:
+        cur = await _conn().execute("SELECT * FROM group_memory WHERE chat_id=? ORDER BY id DESC LIMIT ?", (chat_id, limit))
+    return [dict(r) for r in await cur.fetchall()]
 
+# Users
+async def upsert_user(user_id, username="", first_name="", last_name="", is_bot=False, in_private=False, in_group=False):
+    now = int(time.time())
+    await _conn().execute("INSERT INTO users(user_id, username, first_name, last_name, is_bot, first_seen, last_seen, msg_count, private_msgs, group_msgs) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, first_name=excluded.first_name, last_name=excluded.last_name, last_seen=excluded.last_seen, msg_count=users.msg_count+1, private_msgs=users.private_msgs+?, group_msgs=users.group_msgs+?", (user_id, username, first_name, last_name, int(is_bot), now, now, 1, int(in_private), int(in_group), int(in_private), int(in_group)))
+    await _conn().commit()
 
-# ── Group messages (recent context window) ────────────────────────────────────
+async def get_user(user_id):
+    cur = await _conn().execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    row = await cur.fetchone()
+    return dict(row) if row else None
 
-async def add_group_message(chat_id: int, user_id: int, username: str, first_name: str,
-                            content: str, is_media: bool = False, media_caption: str = "",
-                            is_bot: bool = False) -> None:
-    async with _connect_db() as db:
-        await db.execute(
-            """INSERT INTO group_messages
-               (chat_id, user_id, username, first_name, content, is_media, media_caption, is_bot, timestamp)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (chat_id, user_id, username, first_name, content[:1500],
-             1 if is_media else 0, media_caption[:500], 1 if is_bot else 0, time.time()),
-        )
-        await db.commit()
-        # Trim to last N per group
-        await db.execute(
-            """DELETE FROM group_messages WHERE chat_id=? AND id NOT IN (
-                 SELECT id FROM group_messages WHERE chat_id=? ORDER BY timestamp DESC LIMIT ?
-               )""",
-            (chat_id, chat_id, config.GROUP_MEMORY_SIZE),
-        )
-        await db.commit()
+async def add_user_fact(user_id, fact, source_chat=0):
+    await _conn().execute("INSERT INTO user_facts(user_id, fact, source_chat, ts) VALUES(?,?,?,?)", (user_id, fact, source_chat, int(time.time())))
+    await _conn().commit()
 
+async def get_user_facts(user_id, limit=12):
+    cur = await _conn().execute("SELECT fact FROM user_facts WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit))
+    return [dict(r) for r in await cur.fetchall()]
 
-async def get_recent_group_messages(chat_id: int, limit: int = 12) -> List[Dict[str, Any]]:
-    async with _connect_db() as db:
-        async with db.execute(
-            "SELECT * FROM group_messages WHERE chat_id=? ORDER BY timestamp DESC LIMIT ?",
-            (chat_id, limit),
-        ) as cur:
-            rows = await cur.fetchall()
-    rows = list(reversed(rows))
-    return [dict(r) for r in rows]
+async def has_user_fact(user_id, fact):
+    cur = await _conn().execute("SELECT 1 FROM user_facts WHERE user_id=? AND LOWER(fact)=LOWER(?) LIMIT 1", (user_id, fact))
+    return await cur.fetchone() is not None
 
+async def clear_user_facts(user_id):
+    cur = await _conn().execute("DELETE FROM user_facts WHERE user_id=?", (user_id,)); await _conn().commit(); return cur.rowcount or 0
 
-async def last_bot_message_time(chat_id: int) -> float:
-    async with _connect_db() as db:
-        async with db.execute(
-            "SELECT MAX(timestamp) AS t FROM group_messages WHERE chat_id=? AND is_bot=1",
-            (chat_id,),
-        ) as cur:
-            row = await cur.fetchone()
-            return row["t"] if row and row["t"] else 0.0
+# Private messages
+async def add_private_message(user_id, role, content):
+    await _conn().execute("INSERT INTO private_messages(user_id, role, content, ts) VALUES(?,?,?,?)", (user_id, role, content, int(time.time())))
+    await _conn().commit()
+    await _conn().execute("DELETE FROM private_messages WHERE user_id=? AND id NOT IN (SELECT id FROM private_messages WHERE user_id=? ORDER BY id DESC LIMIT 80)", (user_id, user_id))
+    await _conn().commit()
 
+async def get_private_history(user_id, limit=16):
+    cur = await _conn().execute("SELECT role, content FROM private_messages WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit))
+    return [{"role": r["role"], "content": r["content"]} for r in reversed(await cur.fetchall())]
 
-# ── Group memory (long-term facts) ────────────────────────────────────────────
+async def clear_private_history(user_id):
+    cur = await _conn().execute("DELETE FROM private_messages WHERE user_id=?", (user_id,)); await _conn().commit(); return cur.rowcount or 0
 
-async def add_group_memory(chat_id: int, user_id: int, fact: str) -> None:
-    fact = fact.strip()
-    if not fact:
-        return
-    async with _connect_db() as db:
-        await db.execute(
-            "INSERT INTO group_memory (chat_id, user_id, fact, created_at) VALUES (?, ?, ?, ?)",
-            (chat_id, user_id, fact[:500], time.time()),
-        )
-        await db.commit()
-        # Keep max 40 facts per chat
-        await db.execute(
-            """DELETE FROM group_memory WHERE chat_id=? AND id NOT IN (
-                 SELECT id FROM group_memory WHERE chat_id=? ORDER BY created_at DESC LIMIT 40
-               )""",
-            (chat_id, chat_id),
-        )
-        await db.commit()
+# Reaction dedup
+async def already_reacted(chat_id, message_id):
+    cur = await _conn().execute("SELECT 1 FROM reactions_dedup WHERE chat_id=? AND message_id=?", (chat_id, message_id))
+    return await cur.fetchone() is not None
 
+async def mark_reacted(chat_id, message_id):
+    await _conn().execute("INSERT OR IGNORE INTO reactions_dedup(chat_id, message_id, ts) VALUES(?,?,?)", (chat_id, message_id, int(time.time())))
+    await _conn().commit()
 
-async def get_group_memory(chat_id: int, user_id: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
-    async with _connect_db() as db:
-        if user_id is not None:
-            q = ("SELECT * FROM group_memory WHERE chat_id=? AND user_id=? "
-                 "ORDER BY created_at DESC LIMIT ?")
-            params = (chat_id, user_id, limit)
-        else:
-            q = ("SELECT * FROM group_memory WHERE chat_id=? "
-                 "ORDER BY created_at DESC LIMIT ?")
-            params = (chat_id, limit)
-        async with db.execute(q, params) as cur:
-            rows = await cur.fetchall()
-    return [dict(r) for r in rows]
+# Chat summaries
+async def add_chat_summary(chat_id, summary, topics=""):
+    await _conn().execute("INSERT INTO chat_summaries(chat_id, summary, topics, ts) VALUES(?,?,?,?)", (chat_id, summary, topics, int(time.time())))
+    await _conn().commit()
+    await _conn().execute("DELETE FROM chat_summaries WHERE chat_id=? AND id NOT IN (SELECT id FROM chat_summaries WHERE chat_id=? ORDER BY id DESC LIMIT 3)", (chat_id, chat_id))
+    await _conn().commit()
 
+async def get_chat_summaries(chat_id, limit=2):
+    cur = await _conn().execute("SELECT summary, topics, ts FROM chat_summaries WHERE chat_id=? ORDER BY id DESC LIMIT ?", (chat_id, limit))
+    return [dict(r) for r in await cur.fetchall()]
 
-# ── Channels ──────────────────────────────────────────────────────────────────
+# Mood
+async def get_mood():
+    cur = await _conn().execute("SELECT mood, energy FROM moods WHERE id=1")
+    row = await cur.fetchone()
+    if row: return dict(row)
+    await _conn().execute("INSERT OR IGNORE INTO moods(id, mood, energy, ts) VALUES(1, 'спокойная', 0.5, ?)", (int(time.time()),))
+    await _conn().commit()
+    return {"mood": "спокойная", "energy": 0.5}
 
-async def upsert_channel(chat_id: int, username: str = "", title: str = "") -> None:
-    async with _connect_db() as db:
-        await db.execute(
-            """INSERT INTO channels (chat_id, username, title, enabled, first_seen, last_commented)
-               VALUES (?, ?, ?, 1, ?, 0)
-               ON CONFLICT(chat_id) DO UPDATE SET username=excluded.username, title=excluded.title""",
-            (chat_id, username, title, time.time()),
-        )
-        await db.commit()
+async def set_mood(mood, energy):
+    await _conn().execute("INSERT INTO moods(id, mood, energy, ts) VALUES(1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET mood=excluded.mood, energy=excluded.energy, ts=excluded.ts", (mood, energy, int(time.time())))
+    await _conn().commit()
 
-
-async def set_channel_enabled(chat_id: int, enabled: bool) -> None:
-    async with _connect_db() as db:
-        await db.execute("UPDATE channels SET enabled=? WHERE chat_id=?", (1 if enabled else 0, chat_id))
-        await db.commit()
-
-
-async def is_channel_enabled(chat_id: int) -> bool:
-    async with _connect_db() as db:
-        async with db.execute("SELECT enabled FROM channels WHERE chat_id=?", (chat_id,)) as cur:
-            row = await cur.fetchone()
-            if row is None:
-                return True  # unknown channel → default on
-            return bool(row["enabled"])
-
-
-async def touch_channel_comment(chat_id: int) -> None:
-    async with _connect_db() as db:
-        await db.execute(
-            "UPDATE channels SET last_commented=? WHERE chat_id=?", (time.time(), chat_id)
-        )
-        await db.commit()
-
-
-async def get_channel_last_commented(chat_id: int) -> float:
-    async with _connect_db() as db:
-        async with db.execute("SELECT last_commented FROM channels WHERE chat_id=?", (chat_id,)) as cur:
-            row = await cur.fetchone()
-            return row["last_commented"] if row else 0.0
-
-
-# ── Mood ──────────────────────────────────────────────────────────────────────
-
-async def get_mood() -> Dict[str, Any]:
-    async with _connect_db() as db:
-        async with db.execute("SELECT * FROM moods WHERE id=1") as cur:
-            row = await cur.fetchone()
-            return dict(row) if row else {"mood": "спокойная", "energy": 0.5}
-
-
-async def set_mood(mood: str, energy: float) -> None:
-    async with _connect_db() as db:
-        await db.execute(
-            "UPDATE moods SET mood=?, energy=?, updated_at=? WHERE id=1",
-            (mood[:60], max(0.0, min(1.0, energy)), time.time()),
-        )
-        await db.commit()
-
-
-# ── AI cache ──────────────────────────────────────────────────────────────────
-
-async def get_ai_cached(query_hash: str) -> Optional[str]:
-    async with _connect_db() as db:
-        async with db.execute("SELECT response FROM ai_cache WHERE query_hash=?", (query_hash,)) as cur:
-            row = await cur.fetchone()
-            if row:
-                await db.execute("UPDATE ai_cache SET hit_count=hit_count+1 WHERE query_hash=?", (query_hash,))
-                await db.commit()
-                return row["response"]
-    return None
-
-
-async def set_ai_cached(query_hash: str, query: str, response: str, model: str = "") -> None:
-    async with _connect_db() as db:
-        await db.execute(
-            """INSERT OR REPLACE INTO ai_cache (query_hash, query, response, model, created_at, hit_count)
-               VALUES (?, ?, ?, ?, ?, 0)""",
-            (query_hash, query[:500], response[:4000], model, time.time()),
-        )
-        await db.commit()
-
-
-async def cleanup_old_cache(max_age_days: int = 7) -> None:
-    cutoff = time.time() - max_age_days * 86400
-    async with _connect_db() as db:
-        await db.execute("DELETE FROM ai_cache WHERE created_at < ?", (cutoff,))
-        await db.commit()
-
-
-async def run_periodic_cleanup() -> None:
-    """Periodic cleanup loop — runs every hour."""
-    import asyncio as _a
+# Cleanup
+async def run_periodic_cleanup():
+    import asyncio
     while True:
+        await asyncio.sleep(600)
         try:
-            await _a.sleep(3600)
-            await cleanup_old_cache(max_age_days=7)
-        except _a.CancelledError:
-            break
-        except Exception:
-            await _a.sleep(60)
+            cutoff = int(time.time()) - 3600
+            await _conn().execute("DELETE FROM reactions_dedup WHERE ts < ?", (cutoff,))
+            await _conn().commit()
+        except Exception as e:
+            logger.debug(f"cleanup error: {e}")

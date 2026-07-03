@@ -1,253 +1,161 @@
-"""Private chat handler for Lyuba — 1-on-1 conversations with memory."""
-
-import asyncio
-import logging
-import random
-
+"""Люба Private chat handler — normal AI conversation with memory."""
+import asyncio, logging, random
 from aiogram import Router, F
-from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from aiogram.enums import ChatAction
-
+from aiogram.filters import Command
 from bot.config import config
-from bot import database as db
-from bot.context import build_private_context
 from bot.mood import update_mood_from_message, current_mood_descriptor
-from bot.media_handler import get_photo_data_uri, extract_caption
-from bot.partners import partner_manager
-from bot.web_search import verify_claim
-from ai import ai as ai_client, THINKING_PHRASES, GREETING_PHRASES
+from bot.persona import PERSONA_PROMPT
+from bot import database as db
+from bot.context import build_private_context, build_user_profile, extract_and_store_facts
+from ai import client as ai_client
 
 logger = logging.getLogger("luba.chat")
-
 chat_router = Router()
+_MAX_HISTORY = 16
 
-_VERIFY_HINTS = ["новост", "правда ли", "это правда", "сколько стоит", "цена",
-                 "когда выйдет", "что случилось", "узнать", "проверь",
-                 "по данным", "говорят что"]
+@chat_router.message(Command("start"), F.chat.type == "private")
+async def cmd_start(message):
+    u = message.from_user
+    if u: await db.upsert_user(u.id, u.username or "", u.first_name or "", u.last_name or "", u.is_bot, in_private=True)
+    await message.reply("Привет! Я Люба 😊 Можно просто на «ты». Расскажи что-нибудь — поболтаем? ☕")
 
-
-def _needs_verification(text: str) -> bool:
-    t = (text or "").lower()
-    if not t or len(t) < 15:
-        return False
-    return any(h in t for h in _VERIFY_HINTS)
-
-
-async def _check_user(message: Message) -> bool:
-    if message.from_user is None:
-        return False
-    if message.from_user.is_bot and message.from_user.id != config.BOT_ID:
-        return False
-    user = await db.get_or_create_user(
-        user_id=message.from_user.id,
-        username=message.from_user.username or "",
-        first_name=message.from_user.first_name or "",
-        last_name=message.from_user.last_name or "",
-        language_code=message.from_user.language_code or "ru",
-    )
-    if user.get("is_blocked"):
-        return False
-    return True
-
-
-@chat_router.message(CommandStart(), F.chat.type == "private")
-async def cmd_start(message: Message):
-    if not await _check_user(message):
-        return
-    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    await message.answer(random.choice(GREETING_PHRASES))
-
-
-@chat_router.message(Command("help"), F.chat.type == "private")
-async def cmd_help(message: Message):
-    if not await _check_user(message):
-        return
-    await message.answer(
-        "я Люба — просто поболтать могу обо всём ☕\n\n"
-        "/clear — забыть что обсуждали\n"
-        "/mood — покажу своё настроение\n"
-        "ещё я вижу фото и могу проверить что-нибудь в интернете. "
-        "просто пиши как знакомой 😊"
-    )
-
+@chat_router.message(Command("help"))
+async def cmd_help(message):
+    await message.reply("👋 Я Люба. Что умею:\n\n💬 Текст — пиши, отвечу\n📷 Фото — опишу и отреагирую\n🎤 Голосовое — расшифрую и отвечу\n😀 Стикеры — отреагирую\n🔍 Новости — в группе дополняю инфой из сети\n🏷 Inline — @asluba_bot <вопрос> в любом чате\n\nКоманды:\n/clear — забыть историю чата\n/mood — моё настроение\n/whoami — что я о тебе помню\n/stats — статистика (владелец)")
 
 @chat_router.message(Command("clear"), F.chat.type == "private")
-async def cmd_clear(message: Message):
-    if not await _check_user(message):
-        return
-    await db.clear_chat_history(message.from_user.id)
-    await message.answer("всё, чистый лист 🙈 о чём поговорим?")
-
+async def cmd_clear(message):
+    n = await db.clear_private_history(message.from_user.id)
+    await message.reply(f"Готово — забыла историю нашего разговора ({n} сообщений) 🧹")
 
 @chat_router.message(Command("mood"), F.chat.type == "private")
-async def cmd_mood(message: Message):
-    if not await _check_user(message):
-        return
+async def cmd_mood(message):
     mood = await current_mood_descriptor()
-    m = await db.get_mood()
-    await message.answer(
-        f"сейчас я {mood}. энергии примерно {int(m.get('energy', 0.5) * 100)}% ☕"
-    )
+    await message.reply(f"Сейчас я {mood} 😊")
 
-
-@chat_router.message(F.photo, F.chat.type == "private")
-async def handle_photo(message: Message):
-    if not await _check_user(message):
-        return
-    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    status = await message.answer(random.choice(THINKING_PHRASES))
-
-    caption = extract_caption(message)
-    data_uri = await get_photo_data_uri(message.bot, message.photo)
-    if not data_uri:
-        await status.delete()
-        await message.answer("ой, не могу открыть фото 🙈 попробуй ещё раз?")
-        return
-
-    mood = await current_mood_descriptor()
-    await update_mood_from_message(caption or "фото")
-
-    prompt = "Опиши что на фото и прокомментируй живо, как подруга."
-    if caption:
-        prompt = f"Пользователь прислал фото с подписью: «{caption}». Опиши и прокомментируй."
-
-    # Vision (HF Qwen3-VL → Pollinations)
-    text = await ai_client.vision(data_uri, prompt)
-    if text:
-        text = text[:config.CHAT_MAX_CHARS]
-        # Maybe add partner link if photo is car/product related
-        partner_hint = ""
-        try:
-            links = partner_manager.get_all_partner_links_for_dialog(
-                caption or text, max_programs=1
-            )
-            if links:
-                partner_hint = f"\n\nесли надо — глянь тут: {links[0]['url']}"
-        except Exception:
-            pass
-        await status.delete()
-        await message.answer(text + partner_hint)
-    else:
-        await status.delete()
-        await message.answer("блин, не смогла разглядеть фото 🙈 попробуй ещё разок?")
-
+@chat_router.message(Command("whoami"), F.chat.type == "private")
+async def cmd_whoami(message):
+    profile = await build_user_profile(message.from_user.id)
+    if not profile: await message.reply("Пока ничего о тебе не знаю. Расскажи что-нибудь о себе 🙂")
+    else: await message.reply(f"Вот что я о тебе помню:\n\n{profile}")
 
 @chat_router.message(F.text, F.chat.type == "private")
-async def handle_text(message: Message):
-    if not await _check_user(message):
-        return
+async def handle_private_text(message):
+    if message.chat.type != "private": return
+    u = message.from_user
+    if not u: return
     text = (message.text or "").strip()
-    if not text:
-        return
-    # Unknown command guard
-    if text.startswith("/"):
-        cmd = text.split()[0].lower().split("@")[0]
-        known = {"/start", "/help", "/clear", "/mood"}
-        if cmd not in known:
-            await message.answer(f"не знаю команду {cmd} 🤔 напиши /help")
-            return
-
-    await _process_private(message, text)
-
-
-async def _process_private(message: Message, text: str):
-    """Core private chat processing."""
-    user_id = message.from_user.id
-    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    status = await message.answer(random.choice(THINKING_PHRASES))
-
-    await update_mood_from_message(text)
+    if not text or text.startswith("/"): return
+    await db.upsert_user(u.id, u.username or "", u.first_name or "", u.last_name or "", u.is_bot, in_private=True)
+    update_mood_from_message(text)
     mood = await current_mood_descriptor()
-    extra_ctx = build_private_context(message)
-
-    # Channel + site recommendations context (always present, used sparingly)
-    # Обычным текстом, без меток — ничего не утекает
-    extra_ctx += (
-        "\n\nМожешь иногда (1 из 6 сообщений, если к месту) посоветовать каналы "
-        "@sochiautoparts (авто-новости) или @bmw_mpower_club (BMW клуб), "
-        "или магазин sochiautoparts.ru/shop."
-    )
-
-    # Include real product / post from the site — higher probability for shopping topics
+    name = u.first_name or u.username or ""
     try:
-        t_lower = (text or "").lower()
-        is_shopping = any(k in t_lower for k in [
-            "купить", "магазин", "цена", "стоим", "заказ", "товар", "запчаст",
-            "детал", "артикул", "подобрать", "найти", "выбор", "рекоменд"
-        ])
-        product_prob = 0.5 if is_shopping else 0.25
-        post_prob = 0.25 if is_shopping else 0.12
-
-        if random.random() < product_prob:
-            from bot import site_content as sc
-            prod = await sc.relevant_product(text)
-            if prod:
-                extra_ctx += "\n\n" + sc.format_product_for_context(prod)
-        if random.random() < post_prob:
-            from bot import site_content as sc
-            post = await sc.random_post()
-            if post:
-                extra_ctx += "\n\nСвежий пост на сайте (можешь поделиться): " + sc.format_post_for_context(post)
-    except Exception as e:
-        logger.debug(f"site content error: {e}")
-
-    # Collect partner links relevant to the message
+        for f in await extract_and_store_facts(u.id, name, text, message.chat.id): logger.info(f"FACT: {f}")
+    except: pass
+    history = await db.get_private_history(u.id, _MAX_HISTORY)
+    await db.add_private_message(u.id, "user", text)
+    user_profile = await build_user_profile(u.id)
+    ctx = build_private_context(user_profile)
+    system = PERSONA_PROMPT + f"\n\nТвоё текущее настроение: {mood}.\n{ctx}"
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     try:
-        partner_links = partner_manager.get_all_partner_links_for_dialog(text, max_programs=2)
-        if partner_links:
-            extra_ctx += "\n\nПартнёрские ссылки (используй ОДНУ если к месту, естественно, не в каждом ответе):\n"
-            for pl in partner_links:
-                extra_ctx += f"- {pl['name']} ({pl['label']}): {pl['url']}\n"
-    except Exception as e:
-        logger.debug(f"partner links error: {e}")
-
-    # Web verification — BEFORE AI call so results are in context
-    web_context = ""
-    if _needs_verification(text):
-        try:
-            web_context = await asyncio.wait_for(verify_claim(text), timeout=5.0)
-        except (asyncio.TimeoutError, Exception):
-            web_context = ""
-
-    if web_context:
-        extra_ctx += f"\n\nРезультаты веб-поиска (используй для дополнения ответа):\n{web_context}"
-
-    try:
-        out = await asyncio.wait_for(
-            ai_client.chat(
-                user_id=user_id,
-                message=text,
-                extra_context=extra_ctx,
-                mood=mood,
-                max_chars=config.CHAT_MAX_CHARS,
-            ),
-            timeout=30.0,
-        )
-    except asyncio.TimeoutError:
-        await status.delete()
-        await message.answer("ой, застряла немного 🙈 давай ещё раз?")
+        reply = await ai_client.chat(text, system=system, dialog_history=history, max_tokens=800, temperature=0.9, allow_static_fallback=True)
+    except: reply = ""
+    if not reply:
+        await message.reply(random.choice(["Слушай, чет я зависла 🙈 Повтори?", "Не уловила мысль. Иначе?", "Секунду, туплю немного. Давай ещё раз?"]))
         return
+    await db.add_private_message(u.id, "assistant", reply)
+    await message.reply(reply[:4000])
 
-    await status.delete()
-    out = out or random.choice(THINKING_PHRASES)
-
-    # If AI didn't include a source URL but we have web results, append one
-    if web_context:
-        try:
-            import re as _re
-            first_url = _re.search(r"https?://\S+", web_context)
-            if first_url and first_url.group(0) not in out:
-                out += f"\n\nвот, нашла: {first_url.group(0)}"
-        except Exception:
-            pass
-
-    # safe_send handles RetryAfter + length limits
+@chat_router.message(F.photo, F.chat.type == "private")
+async def handle_private_photo(message):
+    u = message.from_user
+    if not u: return
+    caption = (message.caption or "").strip()
+    await db.upsert_user(u.id, u.username or "", u.first_name or "", u.last_name or "", u.is_bot, in_private=True)
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    reply = ""
     try:
-        from bot.safe_send import safe_send
-        await safe_send(message.bot, message.chat.id, out)
-    except Exception:
-        try:
-            await message.answer(out)
-        except Exception:
-            pass
+        from bot.media_handler import download_photo_as_base64
+        data_uri = await download_photo_as_base64(message.bot, message)
+        if data_uri:
+            from bot.persona import PERSONA_PROMPT
+            vision_prompt = f"Пользователь прислал фото. Опиши что видишь (1-2 предложения), потом живо отреагируй как Люба. {'Подпись: ' + caption if caption else ''}"
+            mood = await current_mood_descriptor()
+            system = PERSONA_PROMPT + f"\n\nТвоё текущее настроение: {mood}."
+            reply = await asyncio.wait_for(ai_client.vision(vision_prompt, data_uri, system=system, max_tokens=400), timeout=30.0)
+    except asyncio.TimeoutError: pass
+    except Exception as e: logger.error(f"private vision error: {e}")
+    if not reply and caption:
+        try: reply = await ai_client.chat(caption, system=PERSONA_PROMPT, max_tokens=400)
+        except: reply = ""
+    if not reply: reply = "Прикольное фото 🙂 А что на нём?"
+    if reply:
+        await db.add_private_message(u.id, "assistant", reply)
+        await message.reply(reply[:4000])
+
+@chat_router.message(F.voice, F.chat.type == "private")
+async def handle_private_voice(message):
+    u = message.from_user
+    if not u: return
+    await db.upsert_user(u.id, u.username or "", u.first_name or "", u.last_name or "", u.is_bot, in_private=True)
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    transcribed = ""
+    try:
+        from bot.media_handler import download_voice_as_base64
+        data_uri = await download_voice_as_base64(message.bot, message)
+        if data_uri: transcribed = await asyncio.wait_for(ai_client.transcribe_audio(data_uri), timeout=30.0)
+    except: pass
+    if not transcribed:
+        await message.reply("Не разобрала голосовое 🙈 Повтори текстом?")
+        return
+    update_mood_from_message(transcribed)
+    mood = await current_mood_descriptor()
+    history = await db.get_private_history(u.id, 16)
+    await db.add_private_message(u.id, "user", f"[голосовое]: {transcribed}")
+    system = PERSONA_PROMPT + f"\n\nТвоё текущее настроение: {mood}."
+    try: reply = await ai_client.chat(transcribed, system=system, dialog_history=history, max_tokens=800, allow_static_fallback=True)
+    except: reply = ""
+    if not reply: reply = "Услышала, но чет зависла 🙈 Повтори?"
+    await db.add_private_message(u.id, "assistant", reply)
+    await message.reply(f"🎤 «{transcribed[:200]}»\n\n{reply}"[:4000])
+
+@chat_router.message(F.sticker, F.chat.type == "private")
+async def handle_private_sticker(message):
+    u = message.from_user
+    if not u: return
+    await db.upsert_user(u.id, u.username or "", u.first_name or "", u.last_name or "", u.is_bot, in_private=True)
+    sticker_emoji = (message.sticker.emoji or "🙂") if message.sticker else "🙂"
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    mood = await current_mood_descriptor()
+    history = await db.get_private_history(u.id, 8)
+    await db.add_private_message(u.id, "user", f"[стикер {sticker_emoji}]")
+    system = PERSONA_PROMPT + f"\n\nТвоё текущее настроение: {mood}."
+    prompt = f"Тебе прислали стикер с эмодзи {sticker_emoji}. Коротко отреагируй живо (1 предложение)."
+    try: reply = await ai_client.chat(prompt, system=system, dialog_history=history, max_tokens=150, allow_static_fallback=True)
+    except: reply = ""
+    if not reply: reply = f"Прикольный стикер {sticker_emoji}"
+    await db.add_private_message(u.id, "assistant", reply)
+    await message.reply(reply[:4000])
+
+@chat_router.message(F.chat.type == "private")
+async def handle_private_catchall(message):
+    u = message.from_user
+    if not u: return
+    await db.upsert_user(u.id, u.username or "", u.first_name or "", u.last_name or "", u.is_bot, in_private=True)
+    if message.video_note: label, emoji = "кружочек", "⭕"
+    elif message.video: label, emoji = "видео", "🎥"
+    elif message.document: label, emoji = "файл", "📄"
+    elif message.dice: label, emoji = f"игральный кубик ({message.dice.emoji})", "🎲"
+    elif message.contact: label, emoji = "контакт", "👤"
+    elif message.location: label, emoji = "геолокацию", "📍"
+    elif message.poll: label, emoji = "опрос", "📊"
+    else: label, emoji = "что-то", "🤔"
+    caption = (message.caption or "").strip()
+    await db.add_private_message(u.id, "user", f"[{label}{': '+caption if caption else ''}]")
+    reply = f"Интересный {label} {emoji}! Расскажи текстом что к чему?"
+    await db.add_private_message(u.id, "assistant", reply)
+    await message.reply(reply)

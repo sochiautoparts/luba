@@ -1,34 +1,13 @@
-name: Lyuba Bot v2.0 — HF PRIMARY + POLLINATIONS BACKUP
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Lyuba (@asluba_bot) v2.0 — максимально производительная версия.
-#
-# АРХИТЕКТУРА:
-#   - НЕТ локальной модели (убраны segfault'ы, таймауты, 15с задержки)
-#   - Primary: HuggingFace Qwen2.5-7B-Instruct (0.8с, стабильно)
-#   - Backup: Pollinations free (no auth, всегда доступен)
-#   - Singleton httpx с connection pooling (keep-alive)
-#   - Circuit breaker для каждого провайдера
-#   - Старт за ~30с (вместо 3-5 мин на компиляцию llama-cpp-python)
-#
-# СЕКРЕТЫ (Settings → Secrets and variables → Actions):
-#   BOT_TOKEN     (обязательно) — токен @asluba_bot
-#   OWNER_ID      (обязательно) — Telegram ID владельца
-#   GH_PAT_TOKEN  (обязательно) — GitHub PAT для self-dispatch
-#   HF_TOKEN      (обязательно) — HuggingFace токен для Qwen2.5-7B
-#   POLLINATIONS_API_KEY (опц.) — для лучшего rate-limit у Pollinations
-#
-# Schedule (UTC, Moscow = UTC+3): every 5 hours
-# ══════════════════════════════════════════════════════════════════════════════
+name: Run Lyuba Bot 24/7 (OpenClaw)
 
 on:
   schedule:
-    - cron: '0 0 * * *'      # 03:00 Moscow
-    - cron: '0 5 * * *'      # 08:00 Moscow
-    - cron: '0 10 * * *'     # 13:00 Moscow
-    - cron: '0 15 * * *'     # 18:00 Moscow
-    - cron: '0 20 * * *'     # 23:00 Moscow
+    - cron: '0 */2 * * *'
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
 
 concurrency:
   group: lyuba-bot-single
@@ -44,7 +23,7 @@ env:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 345  # ~5h45m
+    timeout-minutes: 345
 
     steps:
       - name: Cancel conflicting runs and wait
@@ -86,136 +65,106 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
+      - name: Set up Node.js (for OpenClaw)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          echo "=== Dependencies installed (no llama-cpp compilation needed) ==="
+
+      - name: Install OpenClaw
+        run: |
+          npm install -g openclaw@latest
+          openclaw --version
 
       - name: Clean Python cache
         run: |
           find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
           find . -type f -name "*.pyc" -delete 2>/dev/null || true
-          echo "Python cache cleaned"
 
       - name: Create data directory
         run: mkdir -p data
 
-      - name: Download partner data
-        run: |
-          mkdir -p data
-          HTTP_CODE=$(curl -sL -o /tmp/partners_check.json -w "%{http_code}" "https://sochiautoparts.ru/partners.json")
-          if [ "$HTTP_CODE" = "200" ]; then
-            if python3 -c "import json; json.load(open('/tmp/partners_check.json'))" 2>/dev/null; then
-              cp /tmp/partners_check.json data/partners.json
-              echo "Partner data downloaded successfully"
-            else
-              echo "WARNING: Downloaded file is not valid JSON, skipping"
-            fi
-          else
-            echo "Failed to download partner data (HTTP $HTTP_CODE)"
-          fi
-
       - name: Restore database cache
         uses: actions/cache@v4
         with:
-          path: luba.db
-          key: lyuba-bot-db-v2
+          path: data/luba.db
+          key: lyuba-bot-db-v1
           restore-keys: |
             lyuba-bot-db-
 
-      - name: Ensure .gitignore allows database
+      - name: Generate OpenClaw config (dry check)
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
         run: |
-          if [ -f .gitignore ]; then
-            sed -i '/luba\.db/d' .gitignore
-          fi
+          python3 scripts/gen_openclaw_config.py --out /tmp/oc-preview.json
+          echo "=== Active providers preview ==="
+          cat /tmp/oc-preview.json | python3 -c "import json,sys; d=json.load(sys.stdin); print('providers:', list(d['models']['providers'].keys())); print('primary:', d['agents']['defaults']['model']['primary'])"
 
-      - name: Run Lyuba Bot v2.2
+      - name: Run Lyuba Bot (OpenClaw) with unlimited auto-restart
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          BOT_USERNAME: "@asluba_bot"
-          BOT_ID: "8614302697"
+          BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
+          BOT_ID: ${{ secrets.BOT_ID }}
           OWNER_ID: ${{ secrets.OWNER_ID }}
-          # ── AI Providers (free tiers) — auto-enabled when secret is set ──
-          # Groq — Llama 3.3 70B, fastest (~0.4s), free 30 req/min
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          # Google Gemini — gemini-2.0-flash, free 15 req/min
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          # Pollinations — GPT-OSS 20B, free, NO AUTH (always available)
-          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
-          POLLINATIONS_API_KEY_2: ${{ secrets.POLLINATIONS_API_KEY_2 }}
-          # OpenRouter — free models (Llama 3.3 70B)
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          # HuggingFace — Qwen2.5-7B (often 402 depleted on free tier)
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          # Cloudflare Workers AI — Mistral 3.1, 10K req/day free
-          CF_ACCOUNT_ID_1: ${{ secrets.CF_ACCOUNT_ID_1 }}
-          CF_API_TOKEN_1: ${{ secrets.CF_API_TOKEN_1 }}
-          CF_ACCOUNT_ID_2: ${{ secrets.CF_ACCOUNT_ID_2 }}
-          CF_API_TOKEN_2: ${{ secrets.CF_API_TOKEN_2 }}
-          # GitHub PAT for self-dispatch
           GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
-          GH_REPO: sochiautoparts/luba
-          # Database
-          DB_PATH: luba.db
-          ADMITAD_ADS_FILE: data/partners.json
-          PARTNERS_URL: "https://sochiautoparts.ru/partners.json"
-          # Group activity — VERY ACTIVE, safe_send handles RetryAfter
-          GROUP_PROACTIVE_PROB: "0.60"
-          GROUP_MAX_PER_MINUTE: "15"
-          GROUP_MEMORY_SIZE: "30"
+          GH_REPO: ${{ github.repository }}
+          OPENCLAW_PORT: "18789"
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
+          DB_PATH: data/luba.db
           LOG_LEVEL: INFO
         run: |
-          set +e  # disable exit-on-error so retry loop survives any crash
-          echo "=== Starting Lyuba Bot v2.2 ==="
-          echo "MULTI-PROVIDER: Groq → Gemini → Pollinations(POST) → Pollinations(GET) → OpenRouter → HF → Cloudflare"
-          echo "Pollinations PRIMARY (free, no auth, ~0.3s, GPT-OSS 20B with reasoning)"
-          echo "Cache: 60s TTL for deduplication | Retry: 429 backoff | Circuit breaker per provider"
-          echo "=== Launching with UNLIMITED auto-restart ==="
+          set +e
+          echo "=== Starting Lyuba Bot (OpenClaw) ==="
           RETRY=0
           LAST_START=0
           while true; do
             RETRY=$((RETRY+1))
             echo "--- Attempt $RETRY (started $(date -u +%H:%M:%SZ)) ---"
             NOW=$(date +%s)
-            if [ $((NOW - LAST_START)) -gt 600 ]; then
-              RETRY=1
-            fi
+            if [ $((NOW - LAST_START)) -gt 600 ]; then RETRY=1; fi
             LAST_START=$NOW
             python3 -m bot.main
             EXIT_CODE=$?
             echo "Bot exited with code $EXIT_CODE (attempt $RETRY) at $(date -u +%H:%M:%SZ)"
-            if [ $EXIT_CODE -eq 0 ]; then
-              sleep 5
-            elif [ $RETRY -le 3 ]; then
-              sleep 10
-            elif [ $RETRY -le 6 ]; then
-              sleep 15
-            else
-              sleep 30
-            fi
+            if [ $EXIT_CODE -eq 0 ]; then sleep 5
+            elif [ $RETRY -le 3 ]; then sleep 10
+            elif [ $RETRY -le 6 ]; then sleep 15
+            else sleep 30; fi
           done
 
       - name: Save database cache
         uses: actions/cache/save@v4
         if: always()
         with:
-          path: luba.db
-          key: lyuba-bot-db-v2-${{ github.run_id }}
+          path: data/luba.db
+          key: lyuba-bot-db-v1-${{ github.run_id }}
 
       - name: Save database to git
         if: always()
         run: |
-          if [ -f luba.db ]; then
+          if [ -f data/luba.db ]; then
             git config user.name "Lyuba Bot"
             git config user.email "lyuba-bot@users.noreply.github.com"
-            git add -f luba.db || true
+            git fetch origin main || true
+            git add -f data/luba.db || true
             git diff --staged --quiet || git commit -m "db: update $(date +%Y-%m-%d_%H:%M)" || true
-            git add -A || true
-            git stash --include-untracked || true
-            git pull --rebase origin main || true
-            git stash pop || true
-            git push || true
+            git push origin HEAD:main --force-with-lease 2>&1 || git push origin HEAD:main 2>&1 || true
           fi
 
       - name: Re-dispatch workflow for 24/7
@@ -226,19 +175,24 @@ jobs:
           echo "=== Re-dispatching workflow for 24/7 ==="
           REPO=${{ github.repository }}
           sleep 10
-          for i in 1 2 3; do
+          SUCCESS=0
+          for i in 1 2 3 4 5; do
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -H "Authorization: token $GH_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               "https://api.github.com/repos/$REPO/actions/workflows/bot.yml/dispatches" \
               -d '{"ref":"main"}')
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "Workflow re-dispatched successfully (attempt $i)"
+              echo "✅ Workflow re-dispatched successfully (attempt $i)"
+              SUCCESS=1
               break
             fi
-            echo "Re-dispatch attempt $i failed (HTTP $HTTP_CODE), retrying in 10s..."
-            sleep 10
+            echo "❌ Re-dispatch attempt $i failed (HTTP $HTTP_CODE), retrying in 15s..."
+            sleep 15
           done
+          if [ $SUCCESS -eq 0 ]; then
+            echo "⚠️ All re-dispatch attempts failed. Relying on cron schedule (every 2h) as fallback."
+          fi
 
       - name: Cleanup
         if: always()

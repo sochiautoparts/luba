@@ -1,1 +1,1 @@
-"""Bot package for Lyuba."""
+"""Люба Bot package."""
