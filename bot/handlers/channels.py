@@ -53,7 +53,7 @@ async def handle_channel_post(message: Message):
             count=3,  # 3 positive reactions per post
         )
     except Exception as e:
-        logger.debug(f"channel reaction failed: {e}")
+        logger.warning(f"channel reaction failed: {e}")
 
 
 @channel_router.channel_post()
@@ -72,4 +72,4 @@ async def handle_channel_post_catchall(message: Message):
             count=3,
         )
     except Exception as e:
-        logger.debug(f"channel catch-all reaction failed: {e}")
+        logger.warning(f"channel catch-all reaction failed: {e}")
