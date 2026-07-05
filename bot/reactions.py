@@ -125,9 +125,9 @@ async def maybe_react(
     except Exception as e:
         msg = str(e)
         if "REACTION_INVALID" in msg or "not enough rights" in msg.lower():
-            logger.debug(f"no reaction rights in {chat_id}")
+            logger.warning(f"no reaction rights in chat {chat_id} (bot not admin?) — {e}")
         elif "RetryAfter" in msg:
-            logger.debug(f"reaction rate-limited in {chat_id}")
+            logger.warning(f"reaction rate-limited in chat {chat_id} — {e}")
         else:
-            logger.debug(f"reaction failed ({chat_id}/{message_id}): {e}")
+            logger.warning(f"reaction failed ({chat_id}/{message_id}): {e}")
         return False

@@ -37,21 +37,30 @@ async def handle_channel_post(message: Message):
     """
     chat: Chat = message.chat
     await db.upsert_channel(chat.id, username=chat.username or "", title=chat.title or "")
+    logger.info(f"CHANNEL POST received: chat={chat.id} (@{chat.username or ''} / '{chat.title or ''}') msg={message.message_id}")
 
     if not await db.is_channel_enabled(chat.id):
+        logger.warning(f"  channel {chat.id} DISABLED in DB — skip reactions")
         return
 
     # Always react (probability check removed — user wants 3 reactions on EVERY post)
     post_text = (message.caption or message.text or "").strip()
     if _is_politics_or_war(post_text):
+        logger.info(f"  skip: politics/war detected")
         return  # skip politics/war posts
 
+    already = await db.already_reacted(chat.id, message.message_id)
+    if already:
+        logger.info(f"  already reacted to msg {message.message_id} — skip")
+        return
+
     try:
-        await maybe_react(
+        ok = await maybe_react(
             message.bot, chat.id, message.message_id, post_text,
             prob=1.0, force=True,
             count=3,  # 3 positive reactions per post
         )
+        logger.info(f"  maybe_react result: {'OK (3 reactions set)' if ok else 'FAILED (see warnings above)'}")
     except Exception as e:
         logger.warning(f"channel reaction failed: {e}")
 
@@ -61,15 +70,23 @@ async def handle_channel_post_catchall(message: Message):
     """Catch-all for any other channel post type (polls, dice, etc.)."""
     chat: Chat = message.chat
     await db.upsert_channel(chat.id, username=chat.username or "", title=chat.title or "")
+    logger.info(f"CHANNEL POST (catch-all) received: chat={chat.id} (@{chat.username or ''}) msg={message.message_id}")
 
     if not await db.is_channel_enabled(chat.id):
+        logger.warning(f"  channel {chat.id} DISABLED in DB — skip reactions")
+        return
+
+    already = await db.already_reacted(chat.id, message.message_id)
+    if already:
+        logger.info(f"  already reacted to msg {message.message_id} — skip")
         return
 
     try:
-        await maybe_react(
+        ok = await maybe_react(
             message.bot, chat.id, message.message_id, "",
             prob=1.0, force=True,
             count=3,
         )
+        logger.info(f"  maybe_react result (catch-all): {'OK' if ok else 'FAILED'}")
     except Exception as e:
         logger.warning(f"channel catch-all reaction failed: {e}")
