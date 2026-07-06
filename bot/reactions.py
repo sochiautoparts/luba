@@ -124,6 +124,16 @@ async def maybe_react(
         return True
     except Exception as e:
         msg = str(e)
+        if "REACTIONS_TOO_MANY" in msg and count >= 3:
+            # Fallback: try with 1 reaction only (some channels don't allow 3)
+            try:
+                single = [ReactionTypeEmoji(type="emoji", emoji=emojis[0])]
+                await bot.set_message_reaction(chat_id, message_id, single)
+                await db.mark_reacted(chat_id, message_id)
+                logger.info(f"3 reactions failed, 1 reaction OK: {chat_id}/{message_id}")
+                return True
+            except:
+                pass
         if "REACTION_INVALID" in msg or "not enough rights" in msg.lower():
             logger.warning(f"no reaction rights in chat {chat_id} (bot not admin?) — {e}")
         elif "RetryAfter" in msg:
