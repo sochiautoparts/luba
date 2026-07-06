@@ -121,7 +121,7 @@ class LyubaBot:
             logger.info("Proactive + summary loops enabled")
         except Exception as e: logger.warning(f"Proactive failed: {e}")
         await self._notify_owner()
-        try: await self.bot.delete_webhook(drop_pending_updates=False)
+        try: await self.bot.delete_webhook(drop_pending_updates=True)
         except: pass
         allowed = ["message", "edited_message", "channel_post", "edited_channel_post", "inline_query", "chosen_inline_result"]
         logger.info("=== Люба в сети — слушаю сообщения ===")
