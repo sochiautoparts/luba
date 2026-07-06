@@ -1,7 +1,7 @@
 """
-Channel handler — sets 3 POSITIVE emoji reactions on ALL channel posts.
+Channel handler — sets 1 positive emoji reaction on ALL channel posts.
 
-Per user request: bot puts 3 positive reactions (👍❤️🔥 etc.) on every post.
+Per user request: bot puts 1 positive reaction (👍❤️🔥 etc.) on every post.
 NO comments — channels stay clean, bot is a silent engaged subscriber.
 """
 
@@ -32,7 +32,7 @@ def _is_politics_or_war(text: str) -> bool:
 async def handle_channel_post(message: Message):
     """React to channel posts with 3 POSITIVE emojis — NO comments.
 
-    3 reactions per post (👍❤️🔥 / 😄🎉👏 / etc.) — visually engaging.
+    1 reaction per post (Telegram limit) (👍❤️🔥 / 😄🎉👏 / etc.) — visually engaging.
     Handles all common post types: text, photo, video, animation, sticker,
     voice, document, video_note.
     """
@@ -59,7 +59,7 @@ async def handle_channel_post(message: Message):
         ok = await maybe_react(
             message.bot, chat.id, message.message_id, post_text,
             prob=1.0, force=True,
-            count=3,  # 3 positive reactions per post
+            count=1,  # 1 reaction per bot (Telegram limit: 1 reaction per user on channel posts)
         )
         logger.info(f"  maybe_react result: {'OK (3 reactions set)' if ok else 'FAILED (see warnings above)'}")
     except Exception as e:
@@ -86,7 +86,7 @@ async def handle_channel_post_catchall(message: Message):
         ok = await maybe_react(
             message.bot, chat.id, message.message_id, "",
             prob=1.0, force=True,
-            count=3,
+            count=1,  # Telegram limit: 1 reaction per user
         )
         logger.info(f"  maybe_react result (catch-all): {'OK' if ok else 'FAILED'}")
     except Exception as e:
