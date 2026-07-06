@@ -125,6 +125,22 @@ class LyubaBot:
         except: pass
         allowed = ["message", "edited_message", "channel_post", "edited_channel_post", "inline_query", "chosen_inline_result"]
         logger.info("=== Люба в сети — слушаю сообщения ===")
+        # Startup diagnostic: check if bot can access channels
+        try:
+            from bot import database as _db
+            async with _db._conn() as _conn:
+                _cur = await _conn.execute("SELECT chat_id, username, title FROM channels WHERE enabled=1 LIMIT 5")
+                _rows = await _cur.fetchall()
+                logger.info(f"Startup: {len(_rows)} channels in DB")
+                for _row in _rows:
+                    try:
+                        _chat = await self.bot.get_chat(_row["chat_id"])
+                        _me = await self.bot.get_chat_member(_row["chat_id"], self.bot.id)
+                        logger.info(f"  channel {_row['chat_id']} (@{_row['username'] or '?'}): access=OK, member_status={_me.status}")
+                    except Exception as _e:
+                        logger.warning(f"  channel {_row['chat_id']}: access FAILED — {_e}")
+        except Exception as _e:
+            logger.warning(f"Startup channel diagnostic failed: {_e}")
         polling_retries = 0
         while True:
             try:
