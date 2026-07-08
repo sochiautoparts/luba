@@ -28,7 +28,7 @@ jobs:
     steps:
       - name: Cancel conflicting runs and wait
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "=== Checking for other running bot instances ==="
           CURRENT_RUN=${{ github.run_id }}
@@ -118,7 +118,7 @@ jobs:
           BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
           BOT_ID: ${{ secrets.BOT_ID }}
           OWNER_ID: ${{ secrets.OWNER_ID }}
-          GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+          GH_PAT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           OPENCLAW_PORT: "18789"
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -177,7 +177,7 @@ jobs:
       - name: Re-dispatch workflow for 24/7
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "=== Re-dispatching workflow for 24/7 ==="
           REPO=${{ github.repository }}
