@@ -21,16 +21,16 @@ from bot import database as db
 logger = logging.getLogger("luba.reactions")
 
 # Positive emoji pool — used for channel posts (3 reactions per post).
-_POSITIVE_POOL = ["👍", "❤", "🔥", "😄", "👏", "🎉", "💪", "✨", "🤝", "🙏"]
+_POSITIVE_POOL = ["👍", "❤", "🔥", "😄", "👏", "🎉", "💪", "✨", "🤔", "👀"]
 
 # Single-emoji pools — chosen by light keyword matching on the message text.
 _POSITIVE = ["👍", "❤", "🔥", "😄", "👏", "🎉", "💪", "✨"]
 _LOVE = ["❤", "😍", "🥰", "💙", "💜"]
 _FUN = ["😄", "😂", "🤣", "😆", "😎"]
 _WOW = ["😮", "😱", "🤯", "👀", "🔥"]
-_SAD = ["😢", "😔", "🙏", "💔"]
+_SAD = ["😢", "😔", "👀", "💔"]
 _THINK = ["🤔", "👀", "🧐", "💡"]
-_NEUTRAL = ["👍", "🤝", "🙏", "✨"]
+_NEUTRAL = ["👍", "🤔", "👀", "✨"]
 
 
 def _pick_emoji(text: str) -> str:
@@ -46,7 +46,7 @@ def _pick_emoji(text: str) -> str:
     if any(w in t for w in ["почему", "как так", "интересн", "думаю", "вопрос", "?"]):
         return random.choice(_THINK)
     if any(w in t for w in ["спасибо", "благодар", "спс"]):
-        return random.choice(["🙏", "👍", "❤"])
+        return random.choice(["👀", "👍", "❤"])
     return random.choice(_POSITIVE)
 
 
