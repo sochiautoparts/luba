@@ -102,6 +102,8 @@ jobs:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           CF_ACCOUNT_ID_1: ${{ secrets.CF_ACCOUNT_ID_1 }}
           CF_API_TOKEN_1: ${{ secrets.CF_API_TOKEN_1 }}
+          CF_ACCOUNT_ID_2: ${{ secrets.CF_ACCOUNT_ID_2 }}
+          CF_API_TOKEN_2: ${{ secrets.CF_API_TOKEN_2 }}
         run: |
           python3 scripts/gen_openclaw_config.py --out /tmp/oc-preview.json
           echo "=== Active providers preview ==="
@@ -125,6 +127,8 @@ jobs:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           CF_ACCOUNT_ID_1: ${{ secrets.CF_ACCOUNT_ID_1 }}
           CF_API_TOKEN_1: ${{ secrets.CF_API_TOKEN_1 }}
+          CF_ACCOUNT_ID_2: ${{ secrets.CF_ACCOUNT_ID_2 }}
+          CF_API_TOKEN_2: ${{ secrets.CF_API_TOKEN_2 }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
