@@ -1,8 +1,11 @@
-"""Люба AI Client — routes all AI through OpenClaw Gateway + Pollinations direct."""
+"""Люба AI Client — routes all AI through OpenClaw Gateway + Pollinations direct.
+Local Qwen2.5-7B (GGUF) как автономный last-resort fallback: работает без сети,
+ключей и лимитов, когда все облачные провайдеры недоступны."""
 import asyncio, logging, os, random, time
 from typing import List, Optional
 import httpx
 from bot.config import config
+from ai.local_model import call_local
 
 logger = logging.getLogger("luba.ai")
 
@@ -180,7 +183,7 @@ def _static_fallback(prompt):
     if any(w in t for w in ["как дела", "как ты", "как жизнь", "что нового"]): return random.choice(_STATIC_FALLBACKS["howareyou"])
     return random.choice(_STATIC_FALLBACKS["default"])
 
-async def chat(prompt, system="", extra_context="", dialog_history=None, max_tokens=600, temperature=0.9, allow_static_fallback=True, fast=False):
+async def chat(prompt, system="", extra_context="", dialog_history=None, max_tokens=600, temperature=0.9, allow_static_fallback=True, fast=False, prefer_local=False):
     global _stats
     _stats["requests"] += 1
     t0 = time.time()
@@ -190,6 +193,15 @@ async def chat(prompt, system="", extra_context="", dialog_history=None, max_tok
     if dialog_history: messages.extend(dialog_history)
     user_content = f"{extra_context}\n\n---\n\n{prompt}" if extra_context else prompt
     messages.append({"role": "user", "content": user_content})
+
+    # Локальная 7B первой — только при явном prefer_local (LOCAL_MODEL_PRIMARY=1)
+    if prefer_local:
+        out = await call_local(messages, max_tokens, None, mode="post")
+        if out:
+            _stats["success"] += 1
+            logger.info(f"AI primary=local-7B ({time.time()-t0:.1f}s) len={len(out)}")
+            return _strip_name_prefix(out)
+        logger.info("Local 7B unavailable/empty — falling back to cloud cascade")
 
     if fast:
         use_get = (not extra_context) and (not dialog_history) and len(prompt) < 400
@@ -225,6 +237,13 @@ async def chat(prompt, system="", extra_context="", dialog_history=None, max_tok
         if out:
             _stats["success"] += 1; _stats["pollinations_backup"] += 1
             return _strip_name_prefix(out)
+
+    # LOCAL 7B last-resort: всегда доступна (без сети/ключей/лимитов)
+    out = await call_local(messages, max_tokens, temperature)
+    if out:
+        _stats["success"] += 1
+        logger.info(f"AI fallback=local-7B ({time.time()-t0:.1f}s) len={len(out)}")
+        return _strip_name_prefix(out)
 
     _stats["fail"] += 1
     if allow_static_fallback:
@@ -328,4 +347,11 @@ async def transcribe_audio(audio_data_uri, timeout=30.0):
     except: _stats["fail"] += 1
     return ""
 
-def stats(): return dict(_stats)
+def stats():
+    s = dict(_stats)
+    try:
+        from ai.local_model import stats as _local_stats
+        s["local"] = _local_stats()
+    except Exception:
+        pass
+    return s
