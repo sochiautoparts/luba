@@ -6,7 +6,8 @@ on:
   workflow_dispatch:
 concurrency:
   group: lyuba-bot-single
-  cancel-in-progress: true
+  # cancel-in-progress: false — never kill a running bot! (see asya-bot comment)
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -21,35 +22,17 @@ jobs:
     timeout-minutes: 345
 
     steps:
-      - name: Cancel conflicting runs and wait
+      # Skip вместо Cancel: раны никогда не убивают друг друга (анти-лавина).
+      # Если другой ран активен/в очереди — выходим с 0; непрерывность держит
+      # active-ран (re-dispatch в конце) + cron каждые 4ч.
+      - name: Skip if another run is active or queued (no queue buildup)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "=== Checking for other running bot instances ==="
-          CURRENT_RUN=${{ github.run_id }}
-          REPO=${{ github.repository }}
-          for status in in_progress queued; do
-            RUNS=$(curl -s -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/$REPO/actions/runs?status=$status&per_page=10" \
-              | python3 -c '
-          import sys, json
-          try:
-              d = json.load(sys.stdin)
-              for r in d.get("workflow_runs", []):
-                  if r["id"] != int(sys.argv[1]):
-                      print(r["id"])
-          except: pass
-          ' "$CURRENT_RUN")
-            for run_id in $RUNS; do
-              echo "Cancelling $status run: $run_id"
-              curl -s -X POST -H "Authorization: token $GH_TOKEN" \
-                -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/repos/$REPO/actions/runs/$run_id/cancel" || true
-            done
-          done
-          echo "Waiting 60s for old bot instances to fully stop..."
-          sleep 60
-          echo "=== Ready to start ==="
+        run: >
+          ACTIVE=$(curl -s -H "Authorization: token $GH_TOKEN"
+          "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=15"
+          | python3 -c "import sys,json;current=int(sys.argv[1]);d=json.load(sys.stdin);others=[r for r in d.get('workflow_runs',[]) if r['id']!=current and r['path']=='.github/workflows/bot.yml' and r['status'] in ('in_progress','queued','waiting','pending')];print(len(others))" ${{ github.run_id }});
+          if [ "$ACTIVE" -gt 0 ]; then echo "Another bot.yml run is active/queued ($ACTIVE) — skipping."; exit 0; else echo "No other runs — proceeding."; fi
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -77,26 +60,60 @@ jobs:
           openclaw --version
 
       - name: Restore local model cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
-            data/qwen2.5-7b-q5_k_m-00001.gguf
-            data/qwen2.5-7b-q5_k_m-00002.gguf
-          key: qwen25-7b-q5km-gguf-v1
+            data/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf
+            data/qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf
+          key: qwen25-7b-q5km-gguf-v3
 
-      - name: Download local AI model (Qwen2.5-7B GGUF) — only if cache missed
+      - name: Download local AI model (Qwen2.5-7B GGUF) — verify + retry
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          set -e
           mkdir -p data
-          if [ ! -f data/qwen2.5-7b-q5_k_m-00001.gguf ]; then
-            echo "Downloading Qwen2.5-7B-Instruct Q5_K_M (~5.4GB, 2 shards)..."
-            curl -sL --retry 3 -o data/qwen2.5-7b-q5_k_m-00001.gguf \
-              "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
-            curl -sL --retry 3 -o data/qwen2.5-7b-q5_k_m-00002.gguf \
-              "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf"
-            ls -lh data/qwen2.5-7b-q5_k_m-*.gguf
-          else
-            echo "Model already cached"
+          S1=data/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf
+          S2=data/qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf
+          # Валидные размеры: shard1 ~3.99GB, shard2 ~1.45GB.
+          # Защита от битых скачиваний (HF 429/HTML вместо модели): размер-порог.
+          OK1=0; OK2=0
+          [ -f "$S1" ] && [ "$(stat -c%s "$S1")" -ge 3500000000 ] && OK1=1 || true
+          [ -f "$S2" ] && [ "$(stat -c%s "$S2")" -ge 1200000000 ] && OK2=1 || true
+          AUTH=()
+          if [ -n "$HF_TOKEN" ]; then AUTH=("-H" "Authorization: Bearer $HF_TOKEN"); fi
+          for attempt in 1 2 3; do
+            [ "$OK1" = "1" ] && [ "$OK2" = "1" ] && break
+            echo "Model download attempt $attempt..."
+            if [ "$OK1" != "1" ]; then
+              rm -f "$S1"
+              if curl -fSL --retry 3 -C - "${AUTH[@]}" -o "$S1" \
+                  "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf" \
+                  && [ "$(stat -c%s "$S1")" -ge 3500000000 ]; then OK1=1; else rm -f "$S1"; sleep 10; fi
+            fi
+            if [ "$OK2" != "1" ]; then
+              rm -f "$S2"
+              if curl -fSL --retry 3 -C - "${AUTH[@]}" -o "$S2" \
+                  "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf" \
+                  && [ "$(stat -c%s "$S2")" -ge 1200000000 ]; then OK2=1; else rm -f "$S2"; sleep 10; fi
+            fi
+          done
+          if [ "$OK1" != "1" ] || [ "$OK2" != "1" ]; then
+            echo "::error::Model download failed — shard missing or too small"
+            exit 1
           fi
+          ls -lh data/qwen2.5-7b-instruct-q5_k_m-*.gguf
+
+      # Кэш сохраняем СРАЗУ после скачивания (не в конце job): рестарты
+      # не успевали выгрузить 5.4GB в post-фазе — кэш терялся, модель качалась заново
+      - name: Save local model cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf
+            data/qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf
+          key: qwen25-7b-q5km-gguf-v3
 
       - name: Clean Python cache
         run: |
