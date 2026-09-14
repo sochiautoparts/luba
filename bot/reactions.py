@@ -21,16 +21,16 @@ from bot import database as db
 logger = logging.getLogger("luba.reactions")
 
 # Positive emoji pool — used for channel posts (3 reactions per post).
-_POSITIVE_POOL = ["👍", "❤", "🔥", "😄", "👏", "🎉", "💪", "✨", "🤔", "👀"]
+_POSITIVE_POOL = ["👍", "❤", "🔥", "😁", "👏", "🎉", "💯", "⚡", "🤔", "👀"]
 
 # Single-emoji pools — chosen by light keyword matching on the message text.
-_POSITIVE = ["👍", "❤", "🔥", "😄", "👏", "🎉", "💪", "✨"]
-_LOVE = ["❤", "😍", "🥰", "💙", "💜"]
-_FUN = ["😄", "😂", "🤣", "😆", "😎"]
-_WOW = ["😮", "😱", "🤯", "👀", "🔥"]
-_SAD = ["😢", "😔", "👀", "💔"]
-_THINK = ["🤔", "👀", "🧐", "💡"]
-_NEUTRAL = ["👍", "🤔", "👀", "✨"]
+_POSITIVE = ["👍", "❤", "🔥", "😁", "👏", "🎉", "💯", "⚡"]
+_LOVE = ["❤", "😍", "🥰", "💘", "💋"]
+_FUN = ["😁", "🤣", "🤪", "😎", "👻"]
+_WOW = ["😱", "🤯", "👀", "🔥", "😨"]
+_SAD = ["😢", "😭", "💔"]
+_THINK = ["🤔", "👀", "🤨", "⚡"]
+_NEUTRAL = ["👍", "🤔", "👀", "⚡"]
 
 
 def _pick_emoji(text: str) -> str:
@@ -64,9 +64,9 @@ def _pick_3_positive(text: str) -> List[str]:
     if any(w in t for w in ["люблю", "обожаю", "супер", "класс", "❤", "🔥"]):
         preferred = [e for e in ["❤", "🔥", "👏"] if e in pool]
     elif any(w in t for w in ["смешн", "лол", "ха", "😂", "шутк"]):
-        preferred = [e for e in ["😄", "🎉", "✨"] if e in pool]
+        preferred = [e for e in ["😁", "🎉", "💯"] if e in pool]
     elif any(w in t for w in ["ого", "вау", "шок", "жесть", "невероятн"]):
-        preferred = [e for e in ["🔥", "💪", "✨"] if e in pool]
+        preferred = [e for e in ["🔥", "💯", "⚡"] if e in pool]
     # Combine preferred + random from pool, ensure 3 unique
     result = []
     for e in preferred:
