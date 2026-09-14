@@ -62,8 +62,12 @@ def _is_in_bot_loop(message):
     chat_id = message.chat.id
     thread_key = message.reply_to_message.message_id
     now = time.time()
-    tracker = _reply_chain_tracker.get(chat_id, {})
-    tracker = {k: v for k, v in tracker.items() if now - v[1] < _THREAD_TTL}
+    tracker = {k: v for k, v in _reply_chain_tracker.get(chat_id, {}).items() if now - v[1] < _THREAD_TTL}
+    # записываем отфильтрованный dict обратно, чтобы трекер не рос бесконечно
+    if tracker:
+        _reply_chain_tracker[chat_id] = tracker
+    else:
+        _reply_chain_tracker.pop(chat_id, None)
     count, _ = tracker.get(thread_key, (0, now))
     return count >= _MAX_BOT_REPLIES_PER_THREAD
 
@@ -76,10 +80,19 @@ def _track_bot_reply(message):
     count, _ = tracker.get(thread_key, (0, now))
     tracker[thread_key] = (count + 1, now)
 
-async def _log_group_message(message, content="", is_media=False, media_caption="", is_bot=False):
+async def _log_group_message(message, content="", is_media=False, media_caption="", is_bot=False, user_id=None, username=None, first_name=None):
     u = message.from_user
     if not is_bot and u and (u.id == config.BOT_ID or u.is_bot): is_bot = True
-    await db.add_group_message(message.chat.id, u.id if u else 0, (u.username or "") if u else "", (u.first_name or "") if u else "", content or (message.text or ""), is_media, media_caption, is_bot)
+    if is_bot:
+        # ответы бота логируем от имени бота, а не человека — иначе портится память/контекст
+        user_id = config.BOT_ID
+        username = (config.BOT_USERNAME or "").lstrip("@")
+        first_name = "Люба"
+    else:
+        user_id = user_id if user_id is not None else (u.id if u else 0)
+        username = username if username is not None else ((u.username or "") if u else "")
+        first_name = first_name if first_name is not None else ((u.first_name or "") if u else "")
+    await db.add_group_message(message.chat.id, user_id, username, first_name, content or (message.text or ""), is_media, media_caption, is_bot)
 
 async def _should_respond(message):
     u = message.from_user

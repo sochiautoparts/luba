@@ -209,10 +209,13 @@ jobs:
           if [ -f data/luba.db ]; then
             git config user.name "Lyuba Bot"
             git config user.email "lyuba-bot@users.noreply.github.com"
+            # Чекутим свежий origin/main в отдельную ветку: пуш БД от устаревшего
+            # HEAD (и тем более force) мог бы откатить свежие коммиты в main
             git fetch origin main || true
+            git checkout -B db-update origin/main || true
             git add -f data/luba.db || true
             git diff --staged --quiet || git commit -m "db: update $(date +%Y-%m-%d_%H:%M)" || true
-            git push origin HEAD:main --force-with-lease 2>&1 || git push origin HEAD:main 2>&1 || true
+            git push origin db-update:main 2>&1 || echo "DB push skipped (newer commits — OK, cached via actions/cache)"
           fi
 
       - name: Re-dispatch workflow for 24/7

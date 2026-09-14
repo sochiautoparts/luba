@@ -128,17 +128,20 @@ class LyubaBot:
         # Startup diagnostic: check if bot can access channels
         try:
             from bot import database as _db
-            async with _db._conn() as _conn:
-                _cur = await _conn.execute("SELECT chat_id, username, title FROM channels WHERE enabled=1 LIMIT 5")
-                _rows = await _cur.fetchall()
-                logger.info(f"Startup: {len(_rows)} channels in DB")
-                for _row in _rows:
-                    try:
-                        _chat = await self.bot.get_chat(_row["chat_id"])
-                        _me = await self.bot.get_chat_member(_row["chat_id"], self.bot.id)
-                        logger.info(f"  channel {_row['chat_id']} (@{_row['username'] or '?'}): access=OK, member_status={_me.status}")
-                    except Exception as _e:
-                        logger.warning(f"  channel {_row['chat_id']}: access FAILED — {_e}")
+            # ВАЖНО: глобальное aiosqlite-соединение нельзя закрывать/переоткрывать
+            # через async with — берём его напрямую и закрываем только курсор
+            _conn = _db._conn()
+            _cur = await _conn.execute("SELECT chat_id, username, title FROM channels WHERE enabled=1 LIMIT 5")
+            _rows = await _cur.fetchall()
+            await _cur.close()
+            logger.info(f"Startup: {len(_rows)} channels in DB")
+            for _row in _rows:
+                try:
+                    _chat = await self.bot.get_chat(_row["chat_id"])
+                    _me = await self.bot.get_chat_member(_row["chat_id"], self.bot.id)
+                    logger.info(f"  channel {_row['chat_id']} (@{_row['username'] or '?'}): access=OK, member_status={_me.status}")
+                except Exception as _e:
+                    logger.warning(f"  channel {_row['chat_id']}: access FAILED — {_e}")
         except Exception as _e:
             logger.warning(f"Startup channel diagnostic failed: {_e}")
         polling_retries = 0
@@ -175,7 +178,10 @@ async def main():
         try: asyncio.get_running_loop().add_signal_handler(sig, _sig)
         except: pass
     try: await bot.start()
-    finally: _stop_openclaw_gateway()
+    finally:
+        try: await db.close_db()
+        except Exception as e: logger.warning(f"DB close failed: {e}")
+        _stop_openclaw_gateway()
 
 if __name__ == "__main__":
     try: asyncio.run(main())

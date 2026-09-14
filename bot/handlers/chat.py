@@ -49,7 +49,7 @@ async def handle_private_text(message):
     text = (message.text or "").strip()
     if not text or text.startswith("/"): return
     await db.upsert_user(u.id, u.username or "", u.first_name or "", u.last_name or "", u.is_bot, in_private=True)
-    update_mood_from_message(text)
+    await update_mood_from_message(text)
     mood = await current_mood_descriptor()
     name = u.first_name or u.username or ""
     try:
@@ -112,7 +112,7 @@ async def handle_private_voice(message):
     if not transcribed:
         await message.reply("Не разобрала голосовое 🙈 Повтори текстом?")
         return
-    update_mood_from_message(transcribed)
+    await update_mood_from_message(transcribed)
     mood = await current_mood_descriptor()
     history = await db.get_private_history(u.id, 16)
     await db.add_private_message(u.id, "user", f"[голосовое]: {transcribed}")

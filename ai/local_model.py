@@ -26,6 +26,8 @@ logger = logging.getLogger("luba.local")
 
 _llm = None
 _init_lock = asyncio.Lock()
+# llama.cpp instance не потокобезопасна — генерации сериализуем
+_gen_lock = asyncio.Lock()
 _init_failed = False
 
 # ─── Статистика локальной модели (видна в /stats админки) ───────────────────
@@ -167,7 +169,8 @@ async def call_local(messages, max_tokens=400, temperature=0.8, mode="chat"):
             )
 
         t0 = time.time()
-        response = await loop.run_in_executor(None, _generate)
+        async with _gen_lock:
+            response = await loop.run_in_executor(None, _generate)
         gen_s = time.time() - t0
         content = (response["choices"][0]["message"]["content"] or "").strip()
         n_tokens = (response.get("usage") or {}).get("completion_tokens", 0) or 0
