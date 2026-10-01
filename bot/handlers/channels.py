@@ -59,9 +59,9 @@ async def handle_channel_post(message: Message):
         ok = await maybe_react(
             message.bot, chat.id, message.message_id, post_text,
             prob=1.0, force=True,
-            count=3,  # 3 positive reactions per post
+            count=1,  # Telegram Bot API: non-premium bots can set exactly ONE reaction per message
         )
-        logger.info(f"  maybe_react result: {'OK (3 reactions set)' if ok else 'FAILED (see warnings above)'}")
+        logger.info(f"  maybe_react result: {'OK (reaction set)' if ok else 'FAILED (see warnings above)'}")
     except Exception as e:
         logger.warning(f"channel reaction failed: {e}")
 
@@ -86,7 +86,7 @@ async def handle_channel_post_catchall(message: Message):
         ok = await maybe_react(
             message.bot, chat.id, message.message_id, "",
             prob=1.0, force=True,
-            count=3,  # 3 positive reactions per post
+            count=1,  # Telegram Bot API: non-premium bots can set exactly ONE reaction per message
         )
         logger.info(f"  maybe_react result (catch-all): {'OK' if ok else 'FAILED'}")
     except Exception as e:
